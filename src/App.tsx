@@ -16,8 +16,15 @@ import MissionsPage from './pages/user/MissionsPage'
 import PointPage from './pages/user/PointPage'
 import ProfilePage from './pages/user/ProfilePage'
 
+// Admin pages
+import AdminDashboard from './pages/admin/AdminDashboard'
+import AdminPointsPage from './pages/admin/AdminPointsPage'
+import AdminSurveysPage from './pages/admin/AdminSurveysPage'
+import AdminNotificationsPage from './pages/admin/AdminNotificationsPage'
+
 // Route protection
 import { ProtectedRoute } from './components/auth/ProtectedRoute'
+import { AdminRoute } from './components/auth/AdminRoute'
 
 // Dev tools
 import { AccountSwitcher } from './components/dev/AccountSwitcher'
@@ -43,7 +50,11 @@ function App() {
         <Route path="/point" element={<ProtectedRoute><PointPage /></ProtectedRoute>} />
         <Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} />
 
-        {/* TODO: Add more routes */}
+        {/* Admin routes - Protected by AdminRoute */}
+        <Route path="/admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
+        <Route path="/admin/points" element={<AdminRoute><AdminPointsPage /></AdminRoute>} />
+        <Route path="/admin/surveys" element={<AdminRoute><AdminSurveysPage /></AdminRoute>} />
+        <Route path="/admin/notifications" element={<AdminRoute><AdminNotificationsPage /></AdminRoute>} />
       </Routes>
 
       {/* Dev tools - only visible in development mode */}

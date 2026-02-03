@@ -42,17 +42,17 @@ export default function Header({ showLoginButton = true }: HeaderProps) {
         <nav className="bg-hatofes-bg border-t border-hatofes-gray-lighter px-4 py-4">
           <ul className="space-y-4">
             <li>
-              <Link to="/" className="block py-2 text-hatofes-white hover:text-hatofes-accent-yellow" onClick={() => setIsMenuOpen(false)}>
+              <Link to="/" className="block py-2 text-hatofes-white hover:text-hatofes-accent-yellow font-display" onClick={() => setIsMenuOpen(false)}>
                 Home
               </Link>
             </li>
             <li>
-              <Link to="/about" className="block py-2 text-hatofes-white hover:text-hatofes-accent-yellow" onClick={() => setIsMenuOpen(false)}>
+              <Link to="/about" className="block py-2 text-hatofes-white hover:text-hatofes-accent-yellow font-display" onClick={() => setIsMenuOpen(false)}>
                 About
               </Link>
             </li>
             <li>
-              <Link to="/QandA" className="block py-2 text-hatofes-white hover:text-hatofes-accent-yellow" onClick={() => setIsMenuOpen(false)}>
+              <Link to="/QandA" className="block py-2 text-hatofes-white hover:text-hatofes-accent-yellow font-display" onClick={() => setIsMenuOpen(false)}>
                 Q & A
               </Link>
             </li>

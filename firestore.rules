@@ -7,9 +7,12 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Helper function to check email domain
+    // Helper function to check email domain (開発中は一時的に制限解除)
     function isValidDomain() {
-      return request.auth.token.email.matches('.*@g.nagano-c.ed.jp$');
+      // 本番用: return request.auth.token.email.matches('.*@g.nagano-c.ed.jp$');
+      // 開発用: 特定のメールも許可
+      return request.auth.token.email.matches('.*@g.nagano-c.ed.jp$')
+        || request.auth.token.email == 'ebi.sandwich.finland@gmail.com';
     }
 
     // Helper function to get user data
@@ -32,9 +35,11 @@ service cloud.firestore {
       // Anyone with valid domain can read any user (for leaderboards)
       allow read: if isSignedIn() && isValidDomain();
 
-      // Users can only create/update their own document
+      // Users can only create their own document
       allow create: if isSignedIn() && isValidDomain() && request.auth.uid == userId;
-      allow update: if isSignedIn() && isValidDomain() && request.auth.uid == userId;
+
+      // Users can update their own document; admin/staff can update any user
+      allow update: if isSignedIn() && isValidDomain() && (request.auth.uid == userId || isAdminOrStaff());
 
       // Only admins can delete users
       allow delete: if isAdmin();
@@ -42,14 +47,11 @@ service cloud.firestore {
 
     // Point history collection
     match /pointHistory/{historyId} {
-      // Users can read their own point history
-      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      // Users can read their own point history; admin/staff can read all
+      allow read: if isSignedIn() && isValidDomain() && (resource.data.userId == request.auth.uid || isAdminOrStaff());
 
-      // Anyone authenticated can create (system will verify)
-      allow create: if isSignedIn() && isValidDomain();
-
-      // Point history cannot be updated or deleted (immutable)
-      allow update, delete: if false;
+      // Write is denied from client — Cloud Functions only
+      allow write: if false;
     }
 
     // Classes collection
@@ -57,8 +59,11 @@ service cloud.firestore {
       // Anyone authenticated can read
       allow read: if isSignedIn() && isValidDomain();
 
-      // Only admin/staff can write
-      allow write: if isAdminOrStaff();
+      // Create is allowed for authenticated users (for auto-initialization)
+      allow create: if isSignedIn() && isValidDomain();
+
+      // Update/delete is only for admin/staff
+      allow update, delete: if isAdminOrStaff();
     }
 
     // Surveys collection
@@ -72,17 +77,11 @@ service cloud.firestore {
 
     // Survey responses collection
     match /surveyResponses/{responseId} {
-      // Users can read their own responses
-      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      // Users can read their own responses; admin/staff can read all
+      allow read: if isSignedIn() && isValidDomain() && (resource.data.userId == request.auth.uid || isAdminOrStaff());
 
-      // Admin/staff can read all responses
-      allow read: if isAdminOrStaff();
-
-      // Users can create their own responses
-      allow create: if isSignedIn() && isValidDomain() && request.resource.data.userId == request.auth.uid;
-
-      // Responses cannot be updated or deleted
-      allow update, delete: if false;
+      // Write is denied from client — Cloud Functions only
+      allow write: if false;
     }
 
     // News collection

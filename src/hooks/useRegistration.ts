@@ -1,12 +1,12 @@
 import { useState, useCallback } from 'react'
-import { doc, setDoc, Timestamp } from 'firebase/firestore'
+import { doc, setDoc, getDoc, Timestamp } from 'firebase/firestore'
 import { auth, db } from '../lib/firebase'
 import { RegistrationState, RegistrationStep, RegistrationData } from '@/types/auth'
 import { generateUsername } from '@/mocks/wordLists'
 import type { User } from '../types/firestore'
 
 const initialState: RegistrationState = {
-  step: 'google-auth',
+  step: 'grade',  // ログイン済みを前提とする
   data: {},
 }
 
@@ -192,6 +192,19 @@ export function useRegistration() {
         userData.grade = grade
         userData.class = classNumber
         userData.studentNumber = studentNumber
+
+        // Ensure class document exists
+        const classId = `${grade}-${classNumber}`
+        const classDocRef = doc(db, 'classes', classId)
+        const classDoc = await getDoc(classDocRef)
+        if (!classDoc.exists()) {
+          await setDoc(classDocRef, {
+            grade,
+            className: classNumber,
+            totalPoints: 0,
+            memberCount: 0,
+          })
+        }
       }
 
       // Save to Firestore

@@ -21,10 +21,8 @@ export const auth = getAuth(app);
 // Initialize Cloud Firestore and get a reference to the service
 export const db = getFirestore(app);
 
-// Configure Google Auth Provider with domain restriction hint
+// Configure Google Auth Provider
 export const googleProvider = new GoogleAuthProvider();
-googleProvider.setCustomParameters({
-  hd: 'g.nagano-c.ed.jp', // Hosted domain parameter (hint only, not enforced)
-});
+// 開発中は hd パラメータを設定しない（本番用: hd: 'g.nagano-c.ed.jp'）
 
 export default app;

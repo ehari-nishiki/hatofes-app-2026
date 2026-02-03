@@ -18,8 +18,10 @@ export default function GoogleAuthPage() {
       const result = await signInWithPopup(auth, googleProvider)
       const user = result.user
 
-      // Check if email domain is valid
-      if (!user.email?.endsWith('@g.nagano-c.ed.jp')) {
+      // Check if email domain is valid (開発中は一時的に制限解除)
+      const allowedEmails = ['ebi.sandwich.finland@gmail.com']
+      const isValidDomain = user.email?.endsWith('@g.nagano-c.ed.jp') || allowedEmails.includes(user.email || '')
+      if (!isValidDomain) {
         setError('学校のGoogleアカウント（@g.nagano-c.ed.jp）でログインしてください')
         await auth.signOut()
         setLoading(false)

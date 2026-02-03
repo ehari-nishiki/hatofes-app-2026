@@ -6,7 +6,7 @@ export default function Footer() {
       {/* Navigation */}
       <div className="py-4">
         <nav className="max-w-6xl mx-auto px-4">
-          <ul className="flex justify-center gap-8 text-sm">
+          <ul className="flex justify-center gap-8 text-sm font-display">
             <li>
               <Link to="/" className="hover:text-hatofes-accent-yellow transition-colors">
                 Home

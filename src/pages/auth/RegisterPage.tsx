@@ -1,11 +1,13 @@
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useRegistration } from '@/hooks/useRegistration'
+import { useAuth } from '@/contexts/AuthContext'
 import ProgressBar from '@/components/ui/ProgressBar'
 import { wordListA, wordListB, wordListC } from '@/mocks/wordLists'
 
 export default function RegisterPage() {
   const navigate = useNavigate()
+  const { currentUser, loading: authLoading } = useAuth()
   const {
     state,
     prevStep,
@@ -20,12 +22,28 @@ export default function RegisterPage() {
     getProgress,
   } = useRegistration()
 
+  // ログインしていなければ /auth/google にリダイレクト
+  useEffect(() => {
+    if (!authLoading && !currentUser) {
+      navigate('/auth/google')
+    }
+  }, [authLoading, currentUser, navigate])
+
   // loading ステップに入ったら登録処理を実行
   useEffect(() => {
     if (state.step === 'loading') {
       submitRegistration()
     }
   }, [state.step, submitRegistration])
+
+  // 認証中は何も表示しない
+  if (authLoading || !currentUser) {
+    return (
+      <div className="min-h-screen bg-hatofes-bg flex items-center justify-center">
+        <div className="text-hatofes-white">読み込み中...</div>
+      </div>
+    )
+  }
 
   const progress = getProgress()
   const showProgress = !['initial', 'google-auth'].includes(state.step)

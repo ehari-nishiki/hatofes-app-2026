@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import AppHeader from '@/components/layout/AppHeader'
 import { useAuth } from '@/contexts/AuthContext'
 import { usePointHistory } from '@/hooks/usePointHistory'
-import { checkLoginBonus, awardLoginBonus } from '@/lib/pointService'
+import { awardLoginBonus } from '@/lib/pointService'
 import { PointRewardModal } from '@/components/ui/PointRewardModal'
 
 export default function HomePage() {
@@ -19,10 +19,9 @@ export default function HomePage() {
       if (!currentUser || !userData) return
 
       try {
-        const shouldAward = await checkLoginBonus(currentUser.uid)
-        if (shouldAward) {
-          const points = await awardLoginBonus(currentUser.uid, userData.grade, userData.class)
-          setRewardPoints(points)
+        const result = await awardLoginBonus()
+        if (result.success && result.points) {
+          setRewardPoints(result.points)
           setRewardReason('本日のログインボーナス')
           setShowRewardModal(true)
         }

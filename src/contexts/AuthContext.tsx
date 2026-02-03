@@ -27,9 +27,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [userData, setUserData] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Validate email domain
+  // Validate email domain (開発中は一時的に制限解除)
   const isValidDomain = (email: string): boolean => {
-    return email.endsWith('@g.nagano-c.ed.jp');
+    // 本番用: return email.endsWith('@g.nagano-c.ed.jp');
+    // 開発用: 特定のメールも許可
+    const allowedEmails = ['ebi.sandwich.finland@gmail.com'];
+    return email.endsWith('@g.nagano-c.ed.jp') || allowedEmails.includes(email);
   };
 
   // Refresh user data from Firestore

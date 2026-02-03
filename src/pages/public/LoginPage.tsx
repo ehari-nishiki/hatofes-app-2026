@@ -11,8 +11,8 @@ export default function LoginPage() {
   }
 
   const handleJoinIn = () => {
-    // 新規登録フローへ
-    navigate('/register')
+    // 新規登録フローへ（まずGoogle認証を行う）
+    navigate('/auth/google')
   }
 
   return (
