@@ -1,0 +1,143 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* カスタムベーススタイル */
+@layer base {
+  html {
+    font-family: 'hiragino-kaku-gothic-pron', sans-serif;
+  }
+
+  body {
+    background-color: #1a1a1a;
+    color: #ffffff;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* カスタムコンポーネントスタイル */
+@layer components {
+  /* メインボタン（グラデーション） */
+  .btn-main {
+    background: linear-gradient(135deg, #FFC300 0%, #FF4E00 100%);
+    color: #ffffff;
+    padding: 0.5rem 1.5rem;
+    border-radius: 0.25rem;
+    font-weight: 500;
+    font-size: 0.875rem;
+    letter-spacing: 0.025em;
+    transition: all 0.2s;
+    font-family: 'din-2014', sans-serif;
+  }
+
+  .btn-main:hover {
+    background: linear-gradient(135deg, #e6b000 0%, #e64500 100%);
+  }
+
+  .btn-main:active {
+    opacity: 0.9;
+  }
+
+  /* サブボタン（枠線） */
+  .btn-sub {
+    background: transparent;
+    color: #ffffff;
+    padding: 0.5rem 1.5rem;
+    border-radius: 0.25rem;
+    font-weight: 500;
+    font-size: 0.875rem;
+    letter-spacing: 0.025em;
+    border: 1px solid #666666;
+    transition: border-color 0.2s;
+    font-family: 'din-2014', sans-serif;
+  }
+
+  .btn-sub:hover {
+    border-color: #FFC300;
+  }
+
+  /* カード（ダークテーマ + ドロップシャドウ） */
+  .card {
+    background-color: #2a2a2a;
+    border-radius: 0.75rem;
+    padding: 1rem;
+    box-shadow: 0 0 25px 0 rgba(255, 255, 255, 0.3);
+  }
+
+  /* ポイントバッジ（グラデーション） */
+  .point-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #FFC300 0%, #FF4E00 100%);
+    color: #ffffff;
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    font-family: 'din-2014', sans-serif;
+  }
+
+  /* 通知バッジ */
+  .notification-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #FFC300 0%, #FF4E00 100%);
+    color: #ffffff;
+    font-size: 0.75rem;
+    font-weight: 700;
+    min-width: 1.25rem;
+    height: 1.25rem;
+    padding: 0 0.25rem;
+    border-radius: 9999px;
+    font-family: 'din-2014', sans-serif;
+  }
+
+  /* グラデーションテキスト */
+  .text-gradient {
+    background: linear-gradient(135deg, #FFC300 0%, #FF4E00 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* 入力フィールド（ダークテーマ） */
+  .input-field {
+    width: 100%;
+    background-color: #0d0d0d;
+    color: #ffffff;
+    border: 1px solid #666666;
+    border-radius: 0.5rem;
+    padding: 0.75rem 1rem;
+    transition: border-color 0.2s;
+  }
+
+  .input-field:focus {
+    outline: none;
+    border-color: #FFC300;
+  }
+
+  .input-field::placeholder {
+    color: #666666;
+  }
+
+  /* セレクトボックス（ダークテーマ） */
+  .select-field {
+    width: 100%;
+    background-color: #0d0d0d;
+    color: #ffffff;
+    border: 1px solid #666666;
+    border-radius: 0.5rem;
+    padding: 0.75rem 1rem;
+    transition: border-color 0.2s;
+    appearance: none;
+    cursor: pointer;
+  }
+
+  .select-field:focus {
+    outline: none;
+    border-color: #FFC300;
+  }
+}
