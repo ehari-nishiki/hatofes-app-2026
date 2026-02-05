@@ -8,6 +8,8 @@ interface AuthContextType {
   currentUser: FirebaseUser | null;
   userData: User | null;
   loading: boolean;
+  userDataLoading: boolean;
+  userDataChecked: boolean; // true after first check is complete
   signOut: () => Promise<void>;
   refreshUserData: () => Promise<void>;
 }
@@ -26,13 +28,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
   const [userData, setUserData] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [userDataLoading, setUserDataLoading] = useState(true);
+  const [userDataChecked, setUserDataChecked] = useState(false);
 
-  // Validate email domain (開発中は一時的に制限解除)
   const isValidDomain = (email: string): boolean => {
-    // 本番用: return email.endsWith('@g.nagano-c.ed.jp');
-    // 開発用: 特定のメールも許可
-    const allowedEmails = ['ebi.sandwich.finland@gmail.com'];
-    return email.endsWith('@g.nagano-c.ed.jp') || allowedEmails.includes(email);
+    if (import.meta.env.VITE_RESTRICT_DOMAIN !== 'true') return true;
+    return email.endsWith('@g.nagano-c.ed.jp');
   };
 
   // Refresh user data from Firestore
@@ -72,6 +73,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user && isValidDomain(user.email || '')) {
+        // Reset userData loading states synchronously with setCurrentUser
+        // so they are batched into the same render. Without this, ProtectedRoute
+        // sees stale userDataChecked=true / userDataLoading=false from the
+        // previous signed-out state and redirects to /register before the
+        // onSnapshot effect has a chance to run.
+        setUserData(null);
+        setUserDataLoading(true);
+        setUserDataChecked(false);
         setCurrentUser(user);
       } else if (user && !isValidDomain(user.email || '')) {
         // Invalid domain, sign out
@@ -79,9 +88,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await firebaseSignOut(auth);
         setCurrentUser(null);
         setUserData(null);
+        setUserDataLoading(false);
+        setUserDataChecked(true);
       } else {
         setCurrentUser(null);
         setUserData(null);
+        setUserDataLoading(false);
+        setUserDataChecked(true);
       }
       setLoading(false);
     });
@@ -91,10 +104,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Listen to user data changes in Firestore (real-time updates)
   useEffect(() => {
-    if (!currentUser) {
-      setUserData(null);
+    // Wait for auth to finish loading first
+    if (loading) {
       return;
     }
+
+    if (!currentUser) {
+      setUserData(null);
+      setUserDataLoading(false);
+      setUserDataChecked(true);
+      return;
+    }
+
+    // Reset states when starting to load user data
+    setUserDataLoading(true);
+    setUserDataChecked(false);
 
     const userDocRef = doc(db, 'users', currentUser.uid);
     const unsubscribe = onSnapshot(
@@ -105,20 +129,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         } else {
           setUserData(null);
         }
+        setUserDataLoading(false);
+        setUserDataChecked(true);
       },
       (error) => {
         console.error('Error listening to user data:', error);
         setUserData(null);
+        setUserDataLoading(false);
+        setUserDataChecked(true);
       }
     );
 
     return unsubscribe;
-  }, [currentUser]);
+  }, [currentUser, loading]);
 
   const value: AuthContextType = {
     currentUser,
     userData,
     loading,
+    userDataLoading,
+    userDataChecked,
     signOut,
     refreshUserData,
   };

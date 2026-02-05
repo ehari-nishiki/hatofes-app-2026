@@ -1,12 +1,10 @@
 import {
-  doc,
   collection,
   query,
   where,
   orderBy,
   limit,
   getDocs,
-  runTransaction,
 } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { db } from './firebase';
@@ -15,10 +13,10 @@ import app from './firebase';
 
 const functions = getFunctions(app);
 
-const awardLoginBonusFn = httpsCallable<void, { success: boolean; message: string; points?: number }>(functions, 'awardLoginBonus');
+const awardLoginBonusFn = httpsCallable<void, { success: boolean; message: string; points?: number; tickets?: number }>(functions, 'awardLoginBonus');
 const grantPointsFn = httpsCallable<{ userId: string; points: number; reason?: string; details?: string }, { success: boolean; message: string }>(functions, 'grantPoints');
 
-export async function awardLoginBonus(): Promise<{ success: boolean; points?: number }> {
+export async function awardLoginBonus(): Promise<{ success: boolean; points?: number; tickets?: number }> {
   const result = await awardLoginBonusFn();
   return result.data;
 }
@@ -49,18 +47,4 @@ export async function getPointHistory(
   });
 
   return history;
-}
-
-export async function updateClassPoints(classId: string, points: number): Promise<void> {
-  await runTransaction(db, async (transaction) => {
-    const classDocRef = doc(db, 'classes', classId);
-    const classDoc = await transaction.get(classDocRef);
-
-    if (classDoc.exists()) {
-      const classData = classDoc.data();
-      transaction.update(classDocRef, {
-        totalPoints: (classData.totalPoints || 0) + points,
-      });
-    }
-  });
 }

@@ -1,4 +1,5 @@
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
+import { useAuth } from '@/contexts/AuthContext'
 
 interface AppHeaderProps {
   username?: string
@@ -7,11 +8,17 @@ interface AppHeaderProps {
 }
 
 export default function AppHeader({ username = '勇敢な虹色の鳩', grade = 2, classNumber = 'A' }: AppHeaderProps) {
+  const { signOut } = useAuth()
+  const navigate = useNavigate()
   const affiliation = grade === 'teacher' ? '教員' : `${grade}年${classNumber}組`
 
-  const handleLogout = () => {
-    // TODO: Firebase logout
-    window.location.href = '/'
+  const handleLogout = async () => {
+    try {
+      await signOut()
+      navigate('/')
+    } catch (error) {
+      console.error('Logout error:', error)
+    }
   }
 
   return (

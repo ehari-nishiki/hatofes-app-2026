@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { collection, getDocs, query, orderBy, limit } from 'firebase/firestore'
+import { collection, getDocs, query, orderBy, limit, doc, setDoc, deleteDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { useAuth } from '@/contexts/AuthContext'
 
@@ -23,6 +23,7 @@ export default function AdminDashboard() {
   const [stats, setStats] = useState<Stats>({ totalUsers: 0, totalPoints: 0, activeUsers: 0, totalSurveys: 0 })
   const [topClasses, setTopClasses] = useState<TopClass[]>([])
   const [loading, setLoading] = useState(true)
+  const [recalculating, setRecalculating] = useState(false)
 
   useEffect(() => {
     const fetchStats = async () => {
@@ -72,7 +73,66 @@ export default function AdminDashboard() {
     { to: '/admin/surveys', label: 'アンケート管理', icon: '📋', desc: 'アンケートの作成・管理' },
     { to: '/admin/notifications', label: '通知送信', icon: '🔔', desc: 'ユーザーへの通知を送信' },
     { to: '/admin/users', label: 'ユーザー管理', icon: '👥', desc: 'ユーザーの一覧・管理' },
+    { to: '/admin/gacha', label: 'ガチャ管理', icon: '🎰', desc: 'アイテム・チケット配布' },
   ]
+
+  // Recalculate class points from user data
+  const handleRecalculateClassPoints = async () => {
+    if (!confirm('クラスポイントをユーザーデータから再計算しますか？')) return
+
+    setRecalculating(true)
+    try {
+      // Get all users
+      const usersSnap = await getDocs(collection(db, 'users'))
+
+      // Calculate class totals
+      const classData: Record<string, { grade: number; className: string; totalPoints: number; memberCount: number }> = {}
+
+      usersSnap.forEach(docSnap => {
+        const data = docSnap.data()
+        if (data.grade && data.class) {
+          const classId = `${data.grade}-${data.class}`
+          if (!classData[classId]) {
+            classData[classId] = {
+              grade: data.grade,
+              className: data.class,
+              totalPoints: 0,
+              memberCount: 0,
+            }
+          }
+          classData[classId].totalPoints += data.totalPoints || 0
+          classData[classId].memberCount += 1
+        }
+      })
+
+      // Delete all existing class documents
+      const existingClassesSnap = await getDocs(collection(db, 'classes'))
+      for (const docSnap of existingClassesSnap.docs) {
+        await deleteDoc(doc(db, 'classes', docSnap.id))
+      }
+
+      // Create new class documents
+      for (const [classId, data] of Object.entries(classData)) {
+        await setDoc(doc(db, 'classes', classId), data)
+      }
+
+      // Refresh the page data
+      const classesQuery = query(collection(db, 'classes'), orderBy('totalPoints', 'desc'), limit(5))
+      const classesSnap = await getDocs(classesQuery)
+      const classes: TopClass[] = []
+      classesSnap.forEach(docSnap => {
+        classes.push({ id: docSnap.id, ...docSnap.data() } as TopClass)
+      })
+      setTopClasses(classes)
+
+      alert('クラスポイントを再計算しました')
+    } catch (error) {
+      console.error('Error recalculating class points:', error)
+      alert('再計算に失敗しました')
+    } finally {
+      setRecalculating(false)
+    }
+  }
 
   if (loading) {
     return (
@@ -135,7 +195,16 @@ export default function AdminDashboard() {
         </div>
 
         {/* Class Ranking */}
-        <h2 className="text-lg font-bold text-hatofes-white mb-4">クラスランキング TOP5</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-bold text-hatofes-white">クラスランキング TOP5</h2>
+          <button
+            onClick={handleRecalculateClassPoints}
+            disabled={recalculating}
+            className="text-xs text-hatofes-gray hover:text-hatofes-white disabled:opacity-50"
+          >
+            {recalculating ? '再計算中...' : 'データを再計算'}
+          </button>
+        </div>
         <div className="card">
           {topClasses.length === 0 ? (
             <p className="text-hatofes-gray text-center py-4">データがありません</p>

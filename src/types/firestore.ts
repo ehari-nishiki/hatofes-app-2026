@@ -14,6 +14,20 @@ export interface User {
   totalPoints: number;
   createdAt: Timestamp;
   lastLoginDate: string; // YYYY-MM-DD format
+  // Settings (undefined → use default)
+  notificationsEnabled?: boolean; // default: true
+  theme?: 'dark' | 'light'; // default: 'dark'
+  usernameChangeCount?: number; // default: 0, max: 3
+  // Gacha
+  gachaTickets?: number; // default: 0
+}
+
+// Feedback document
+export interface Feedback {
+  userId: string;
+  username: string;
+  message: string;
+  createdAt: Timestamp;
 }
 
 // Point history reasons
@@ -49,6 +63,7 @@ export interface Question {
   question: string;
   required: boolean;
   options?: string[]; // For multiple_choice
+  imageUrl?: string;
   minRating?: number; // For rating
   maxRating?: number; // For rating
 }
@@ -56,8 +71,12 @@ export interface Question {
 // Survey status
 export type SurveyStatus = 'active' | 'closed';
 
+// Survey category
+export type SurveyCategory = 'task' | 'mission';
+
 // Survey document
 export interface Survey {
+  id?: string; // Document ID (optional for creation, present after fetching)
   title: string;
   description: string;
   questions: Question[];
@@ -65,6 +84,7 @@ export interface Survey {
   startDate: Timestamp;
   endDate: Timestamp;
   status: SurveyStatus;
+  category: SurveyCategory; // task = 全員対象（必須系）, mission = 任意参加（挑戦系）
   createdBy: string; // User ID
 }
 
@@ -104,4 +124,43 @@ export interface Notification {
   targetRoles: UserRole[]; // Empty array means all roles
   createdAt: Timestamp;
   readBy: string[]; // Array of user IDs who have read
+  imageUrl?: string;
+}
+
+// Gacha item types
+export type GachaItemType = 'badge' | 'coupon' | 'points' | 'ticket' | 'custom';
+export type GachaRarity = 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
+
+export interface GachaItem {
+  id?: string;
+  name: string;
+  description: string;
+  type: GachaItemType;
+  pointsValue?: number;
+  ticketValue?: number;
+  rarity: GachaRarity;
+  weight: number;
+  imageUrl?: string;
+  isActive: boolean;
+  createdBy: string;
+  createdAt: Timestamp;
+}
+
+export interface GachaHistoryEntry {
+  id?: string;
+  userId: string;
+  itemId: string;
+  itemName: string;
+  itemRarity: GachaRarity;
+  pulledAt: Timestamp;
+}
+
+export interface TicketHistoryEntry {
+  id?: string;
+  userId: string;
+  tickets: number;
+  reason: 'admin_grant' | 'gacha_pull' | 'gacha_item_reward';
+  details: string;
+  grantedBy?: string;
+  createdAt: Timestamp;
 }

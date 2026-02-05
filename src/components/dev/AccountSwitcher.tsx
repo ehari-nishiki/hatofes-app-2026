@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc, getDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 
 type UserRole = 'student' | 'teacher' | 'staff' | 'admin';
@@ -41,12 +41,21 @@ export function AccountSwitcher() {
     setSwitching(true);
     try {
       const userDocRef = doc(db, 'users', currentUser.uid);
+
+      // ドキュメントの存在を確認
+      const docSnap = await getDoc(userDocRef);
+      if (!docSnap.exists()) {
+        alert('ユーザー登録が完了していません。先にアカウント登録を完了してください。');
+        setSwitching(false);
+        return;
+      }
+
       await updateDoc(userDocRef, { role });
       await refreshUserData();
       setIsOpen(false);
     } catch (error) {
       console.error('Error switching role:', error);
-      alert('ロールの切り替えに失敗しました');
+      alert('ロールの切り替えに失敗しました: ' + (error instanceof Error ? error.message : '不明なエラー'));
     } finally {
       setSwitching(false);
     }

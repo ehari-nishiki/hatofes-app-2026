@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { collection, getDocs, doc, setDoc, deleteDoc, Timestamp, query, orderBy } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { useAuth } from '@/contexts/AuthContext'
+import { ImageUploader } from '@/components/ui/ImageUploader'
 
 interface Notification {
   id: string
@@ -20,6 +21,7 @@ export default function AdminNotificationsPage() {
   const [newNotification, setNewNotification] = useState({
     title: '',
     message: '',
+    imageUrl: '',
     targetRoles: ['student', 'teacher', 'staff', 'admin'] as string[],
   })
   const [submitting, setSubmitting] = useState(false)
@@ -54,6 +56,7 @@ export default function AdminNotificationsPage() {
       await setDoc(doc(db, 'notifications', notifId), {
         title: newNotification.title,
         message: newNotification.message,
+        ...(newNotification.imageUrl ? { imageUrl: newNotification.imageUrl } : {}),
         targetRoles: newNotification.targetRoles,
         targetUsers: [],
         createdBy: currentUser?.uid,
@@ -63,7 +66,7 @@ export default function AdminNotificationsPage() {
 
       setMessage({ type: 'success', text: '通知を送信しました' })
       setShowCreate(false)
-      setNewNotification({ title: '', message: '', targetRoles: ['student', 'teacher', 'staff', 'admin'] })
+      setNewNotification({ title: '', message: '', imageUrl: '', targetRoles: ['student', 'teacher', 'staff', 'admin'] })
       fetchNotifications()
     } catch (error) {
       console.error('Error creating notification:', error)
@@ -155,6 +158,12 @@ export default function AdminNotificationsPage() {
                   />
                 </div>
 
+                <ImageUploader
+                  imageUrl={newNotification.imageUrl}
+                  onChange={url => setNewNotification(prev => ({ ...prev, imageUrl: url }))}
+                  label="添付画像"
+                />
+
                 <div>
                   <label className="block text-sm text-hatofes-gray mb-2">送信対象</label>
                   <div className="flex flex-wrap gap-2">
@@ -208,6 +217,9 @@ export default function AdminNotificationsPage() {
                     <div className="flex-1">
                       <h3 className="text-hatofes-white font-medium">{notif.title}</h3>
                       <p className="text-sm text-hatofes-gray mt-1 whitespace-pre-wrap">{notif.message}</p>
+                      {(notif as any).imageUrl && (
+                        <img src={(notif as any).imageUrl} alt="通知画像" className="mt-2 max-h-24 rounded-lg object-contain" />
+                      )}
                       <div className="flex items-center gap-2 mt-2">
                         <span className="text-xs text-hatofes-gray">
                           対象: {notif.targetRoles.map(r => roleLabels[r]).join(', ')}

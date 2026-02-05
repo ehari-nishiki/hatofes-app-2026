@@ -1,8 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { signInWithPopup } from 'firebase/auth'
-import { doc, getDoc } from 'firebase/firestore'
-import { auth, googleProvider, db } from '../../lib/firebase'
+import { auth, googleProvider } from '../../lib/firebase'
 
 export default function GoogleAuthPage() {
   const navigate = useNavigate()
@@ -16,29 +15,21 @@ export default function GoogleAuthPage() {
     try {
       // Sign in with Google
       const result = await signInWithPopup(auth, googleProvider)
-      const user = result.user
 
-      // Check if email domain is valid (開発中は一時的に制限解除)
-      const allowedEmails = ['ebi.sandwich.finland@gmail.com']
-      const isValidDomain = user.email?.endsWith('@g.nagano-c.ed.jp') || allowedEmails.includes(user.email || '')
-      if (!isValidDomain) {
-        setError('学校のGoogleアカウント（@g.nagano-c.ed.jp）でログインしてください')
-        await auth.signOut()
-        setLoading(false)
-        return
+      // ドメインチェック（VITE_RESTRICT_DOMAIN=true の場合のみ）
+      if (import.meta.env.VITE_RESTRICT_DOMAIN === 'true') {
+        const email = result.user.email || ''
+        if (!email.endsWith('@g.nagano-c.ed.jp')) {
+          setError('学校のGoogleアカウント（@g.nagano-c.ed.jp）でログインしてください')
+          await auth.signOut()
+          setLoading(false)
+          return
+        }
       }
 
-      // Check if user exists in Firestore
-      const userDocRef = doc(db, 'users', user.uid)
-      const userDocSnap = await getDoc(userDocRef)
-
-      if (userDocSnap.exists()) {
-        // Existing user - go to home
-        navigate('/home')
-      } else {
-        // New user - go to registration
-        navigate('/register')
-      }
+      // 認証成功後は /home へ。ProtectedRoute がユーザードキュメントの存在確認を行い、
+      // 新規アカウントの場合は /register へリダイレクトする
+      navigate('/home')
     } catch (err: unknown) {
       console.error('Error during Google sign-in:', err)
       if (err instanceof Error) {

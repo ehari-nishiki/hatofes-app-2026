@@ -1,4 +1,7 @@
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
+import { collection, query, where, getCountFromServer } from 'firebase/firestore'
+import { db } from '@/lib/firebase'
 import AppHeader from '@/components/layout/AppHeader'
 import { useAuth } from '@/contexts/AuthContext'
 import { usePointHistory } from '@/hooks/usePointHistory'
@@ -15,9 +18,25 @@ export default function PointPage() {
     : null
   const { classData, loading: classLoading } = useClassPoints(classId)
 
-  // TODO: Implement ranking calculation with Firestore aggregation
-  const personalRank = null as number | null
-  const totalStudents = 1500
+  const [personalRank, setPersonalRank] = useState<number | null>(null)
+  const [totalUsers, setTotalUsers] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (!currentUser || !userData) return
+    const fetchRank = async () => {
+      try {
+        const higherSnap = await getCountFromServer(
+          query(collection(db, 'users'), where('totalPoints', '>', userData.totalPoints))
+        )
+        setPersonalRank(higherSnap.data().count + 1)
+        const totalSnap = await getCountFromServer(query(collection(db, 'users')))
+        setTotalUsers(totalSnap.data().count)
+      } catch (error) {
+        console.error('Error fetching rank:', error)
+      }
+    }
+    fetchRank()
+  }, [currentUser, userData?.totalPoints])
 
   if (!userData) {
     return (
@@ -91,7 +110,7 @@ export default function PointPage() {
                 <span className="font-display text-5xl font-bold text-gradient">
                   {personalRank.toLocaleString()}
                 </span>
-                <span className="text-lg ml-2 text-hatofes-gray-light">/ {totalStudents.toLocaleString()}人中</span>
+                <span className="text-lg ml-2 text-hatofes-gray-light font-display">/ {(totalUsers ?? 0).toLocaleString()}人中</span>
               </>
             ) : (
               <span className="text-hatofes-gray">ランキング計算中...</span>
@@ -146,11 +165,10 @@ export default function PointPage() {
         </section>
 
         {/* Back Button */}
-        <Link
-          to="/home"
-          className="block text-center text-hatofes-gray-light hover:text-hatofes-accent-yellow transition-colors"
-        >
-          ← ホームに戻る
+        <Link to="/home" className="block">
+          <div className="btn-sub w-full py-3 text-center">
+            ホームに戻る
+          </div>
         </Link>
       </main>
     </div>

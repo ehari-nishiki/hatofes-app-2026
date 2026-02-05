@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useRegistration } from '@/hooks/useRegistration'
 import { useAuth } from '@/contexts/AuthContext'
@@ -7,7 +7,7 @@ import { wordListA, wordListB, wordListC } from '@/mocks/wordLists'
 
 export default function RegisterPage() {
   const navigate = useNavigate()
-  const { currentUser, loading: authLoading } = useAuth()
+  const { currentUser, userData, loading: authLoading, userDataChecked } = useAuth()
   const {
     state,
     prevStep,
@@ -22,6 +22,9 @@ export default function RegisterPage() {
     getProgress,
   } = useRegistration()
 
+  // 登録処理が実行中かどうかを追跡
+  const isSubmittingRef = useRef(false)
+
   // ログインしていなければ /auth/google にリダイレクト
   useEffect(() => {
     if (!authLoading && !currentUser) {
@@ -29,10 +32,20 @@ export default function RegisterPage() {
     }
   }, [authLoading, currentUser, navigate])
 
-  // loading ステップに入ったら登録処理を実行
+  // 既に登録済みの場合は /home へ
   useEffect(() => {
-    if (state.step === 'loading') {
-      submitRegistration()
+    if (userDataChecked && userData) {
+      navigate('/home')
+    }
+  }, [userDataChecked, userData, navigate])
+
+  // loading ステップに入ったら登録処理を実行（一度だけ）
+  useEffect(() => {
+    if (state.step === 'loading' && !isSubmittingRef.current) {
+      isSubmittingRef.current = true
+      submitRegistration().finally(() => {
+        isSubmittingRef.current = false
+      })
     }
   }, [state.step, submitRegistration])
 

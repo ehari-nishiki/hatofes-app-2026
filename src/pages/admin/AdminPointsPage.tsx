@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { collection, getDocs, query, orderBy } from 'firebase/firestore'
-import { getFunctions, httpsCallable } from 'firebase/functions'
 import { db } from '@/lib/firebase'
-import app from '@/lib/firebase'
+import { useAuth } from '@/contexts/AuthContext'
+import { grantPoints } from '@/lib/pointService'
 
 interface User {
   id: string
@@ -11,14 +11,13 @@ interface User {
   username: string
   grade?: number
   class?: string
+  studentNumber?: number
   role: string
   totalPoints: number
 }
 
-const functions = getFunctions(app)
-const grantPointsFn = httpsCallable(functions, 'grantPoints')
-
 export default function AdminPointsPage() {
+  const { currentUser } = useAuth()
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedUser, setSelectedUser] = useState<User | null>(null)
@@ -27,6 +26,10 @@ export default function AdminPointsPage() {
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
+  const [searchMode, setSearchMode] = useState<'text' | 'structured'>('text')
+  const [searchGrade, setSearchGrade] = useState<number | null>(null)
+  const [searchClass, setSearchClass] = useState('')
+  const [searchStudentNumber, setSearchStudentNumber] = useState<number | null>(null)
 
   useEffect(() => {
     const fetchUsers = async () => {
@@ -48,18 +51,14 @@ export default function AdminPointsPage() {
   }, [])
 
   const handleGrantPoints = async () => {
-    if (!selectedUser || points <= 0) return
+    if (!selectedUser || points <= 0 || !currentUser) return
 
     setSubmitting(true)
     setMessage(null)
 
     try {
-      await grantPointsFn({
-        userId: selectedUser.id,
-        points,
-        reason: 'admin_grant',
-        details: reason || '管理者による付与',
-      })
+      // Use Cloud Function for point granting
+      await grantPoints(selectedUser.id, points, 'admin_grant', reason || '管理者による付与')
 
       setMessage({ type: 'success', text: `${selectedUser.username} に ${points}pt を付与しました` })
       setSelectedUser(null)
@@ -70,8 +69,8 @@ export default function AdminPointsPage() {
       const q = query(collection(db, 'users'), orderBy('username'))
       const snap = await getDocs(q)
       const list: User[] = []
-      snap.forEach(doc => {
-        list.push({ id: doc.id, ...doc.data() } as User)
+      snap.forEach(docSnap => {
+        list.push({ id: docSnap.id, ...docSnap.data() } as User)
       })
       setUsers(list)
     } catch (error) {
@@ -82,11 +81,20 @@ export default function AdminPointsPage() {
     }
   }
 
-  const filteredUsers = users.filter(u =>
-    u.username.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (u.grade && u.class && `${u.grade}-${u.class}`.includes(searchTerm))
-  )
+  const CLASS_OPTIONS = ['1', '2', '3', '4', '5', '6', '7', 'A', 'B']
+
+  const filteredUsers = searchMode === 'text'
+    ? users.filter(u =>
+        u.username.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        u.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (u.grade && u.class && `${u.grade}-${u.class}`.includes(searchTerm)) ||
+        (u.studentNumber != null && String(u.studentNumber).includes(searchTerm))
+      )
+    : users.filter(u =>
+        (searchGrade == null || u.grade === searchGrade) &&
+        (!searchClass || u.class === searchClass) &&
+        (searchStudentNumber == null || u.studentNumber === searchStudentNumber)
+      )
 
   return (
     <div className="min-h-screen bg-hatofes-bg">
@@ -167,15 +175,68 @@ export default function AdminPointsPage() {
 
         {/* User List */}
         <div className="card">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-bold text-hatofes-white">ユーザー一覧</h2>
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={e => setSearchTerm(e.target.value)}
-              placeholder="検索..."
-              className="bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-1 text-sm text-hatofes-white w-40"
-            />
+          <div className="mb-4">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-bold text-hatofes-white">ユーザー一覧</h2>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setSearchMode('text')}
+                  className={`text-xs px-3 py-1 rounded-full transition-colors ${searchMode === 'text' ? 'bg-hatofes-accent-yellow text-black' : 'bg-hatofes-dark text-hatofes-gray border border-hatofes-gray'}`}
+                >キーワード</button>
+                <button
+                  onClick={() => setSearchMode('structured')}
+                  className={`text-xs px-3 py-1 rounded-full transition-colors ${searchMode === 'structured' ? 'bg-hatofes-accent-yellow text-black' : 'bg-hatofes-dark text-hatofes-gray border border-hatofes-gray'}`}
+                >年組番号</button>
+              </div>
+            </div>
+            {searchMode === 'text' ? (
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={e => setSearchTerm(e.target.value)}
+                placeholder="ユーザー名・メール・年組・番号で検索..."
+                className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-sm text-hatofes-white"
+              />
+            ) : (
+              <div className="space-y-2">
+                <div className="flex gap-2 items-center">
+                  <label className="text-xs text-hatofes-gray w-8 flex-shrink-0">学年</label>
+                  <div className="flex gap-1.5">
+                    {[1, 2, 3].map(g => (
+                      <button
+                        key={g}
+                        onClick={() => setSearchGrade(searchGrade === g ? null : g)}
+                        className={`w-8 h-8 rounded-full text-xs font-bold transition-all ${searchGrade === g ? 'bg-hatofes-accent-yellow text-black' : 'bg-hatofes-dark border border-hatofes-gray text-hatofes-white hover:border-hatofes-accent-yellow'}`}
+                      >{g}年</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex gap-2 items-center">
+                  <label className="text-xs text-hatofes-gray w-8 flex-shrink-0">組</label>
+                  <div className="flex gap-1 flex-wrap">
+                    {CLASS_OPTIONS.map(c => (
+                      <button
+                        key={c}
+                        onClick={() => setSearchClass(searchClass === c ? '' : c)}
+                        className={`w-7 h-7 rounded-full text-xs font-bold transition-all ${searchClass === c ? 'bg-hatofes-accent-yellow text-black' : 'bg-hatofes-dark border border-hatofes-gray text-hatofes-white hover:border-hatofes-accent-yellow'}`}
+                      >{c}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex gap-2 items-center">
+                  <label className="text-xs text-hatofes-gray w-8 flex-shrink-0">番号</label>
+                  <input
+                    type="number"
+                    value={searchStudentNumber ?? ''}
+                    onChange={e => setSearchStudentNumber(e.target.value === '' ? null : parseInt(e.target.value))}
+                    min={1}
+                    max={40}
+                    placeholder="番号"
+                    className="w-20 bg-hatofes-dark border border-hatofes-gray rounded-lg px-2 py-1 text-sm text-hatofes-white placeholder-hatofes-gray"
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           {loading ? (

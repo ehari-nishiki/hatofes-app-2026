@@ -23,6 +23,8 @@ export const db = getFirestore(app);
 
 // Configure Google Auth Provider
 export const googleProvider = new GoogleAuthProvider();
-// 開発中は hd パラメータを設定しない（本番用: hd: 'g.nagano-c.ed.jp'）
+if (import.meta.env.VITE_RESTRICT_DOMAIN === 'true') {
+  googleProvider.setCustomParameters({ hd: 'g.nagano-c.ed.jp' });
+}
 
 export default app;

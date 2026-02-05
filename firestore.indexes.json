@@ -29,21 +29,19 @@
       ]
     },
     {
-      "collectionGroup": "classes",
+      "collectionGroup": "surveys",
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "totalPoints",
-          "order": "DESCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "users",
-      "queryScope": "COLLECTION",
-      "fields": [
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
         {
-          "fieldPath": "totalPoints",
+          "fieldPath": "category",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
           "order": "DESCENDING"
         }
       ]
@@ -61,13 +59,32 @@
           "order": "ASCENDING"
         }
       ]
-    },
+    }
+    ,
     {
-      "collectionGroup": "news",
+      "collectionGroup": "gachaHistory",
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "publishedAt",
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "pulledAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "ticketHistory",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
           "order": "DESCENDING"
         }
       ]

@@ -7,30 +7,30 @@ import type { Survey } from '@/types/firestore'
 
 type SurveyWithStatus = Survey & { id: string; isAnswered: boolean }
 
-export default function MissionsPage() {
+export default function TasksPage() {
   const { currentUser, userData } = useAuth()
-  const [missions, setMissions] = useState<SurveyWithStatus[]>([])
+  const [tasks, setTasks] = useState<SurveyWithStatus[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    const fetchMissions = async () => {
+    const fetchTasks = async () => {
       if (!currentUser) return
 
       try {
-        const data = await getSurveysByCategory('mission', currentUser.uid)
-        setMissions(data)
+        const data = await getSurveysByCategory('task', currentUser.uid)
+        setTasks(data)
       } catch (error) {
-        console.error('Error fetching missions:', error)
+        console.error('Error fetching tasks:', error)
       } finally {
         setLoading(false)
       }
     }
 
-    fetchMissions()
+    fetchTasks()
   }, [currentUser])
 
-  const availableMissions = missions.filter(m => !m.isAnswered)
-  const completedMissions = missions.filter(m => m.isAnswered)
+  const availableTasks = tasks.filter(t => !t.isAnswered)
+  const completedTasks = tasks.filter(t => t.isAnswered)
 
   if (!userData) {
     return (
@@ -52,11 +52,11 @@ export default function MissionsPage() {
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-xl font-bold text-hatofes-white">Mission</h1>
-            <p className="text-xs text-hatofes-gray mt-1">任意参加のミッションです</p>
+            <h1 className="text-xl font-bold text-hatofes-white">Task</h1>
+            <p className="text-xs text-hatofes-gray mt-1">全員対象のタスクです</p>
           </div>
-          {availableMissions.length > 0 && (
-            <span className="notification-badge">{availableMissions.length}</span>
+          {availableTasks.length > 0 && (
+            <span className="notification-badge">{availableTasks.length}</span>
           )}
         </div>
 
@@ -64,30 +64,30 @@ export default function MissionsPage() {
           <div className="card">
             <p className="text-hatofes-gray text-center py-4">読み込み中...</p>
           </div>
-        ) : missions.length === 0 ? (
+        ) : tasks.length === 0 ? (
           <div className="card">
-            <p className="text-hatofes-gray text-center py-4">現在ミッションはありません</p>
+            <p className="text-hatofes-gray text-center py-4">現在タスクはありません</p>
           </div>
         ) : (
           <>
-            {/* Available Missions */}
-            {availableMissions.length > 0 && (
+            {/* Available Tasks */}
+            {availableTasks.length > 0 && (
               <div className="card mb-6">
-                <h2 className="text-sm font-bold text-hatofes-gray-light mb-4">挑戦できるミッション</h2>
+                <h2 className="text-sm font-bold text-hatofes-gray-light mb-4">未完了のタスク</h2>
                 <ul className="divide-y divide-hatofes-gray">
-                  {availableMissions.map((mission) => (
-                    <li key={mission.id}>
+                  {availableTasks.map((task) => (
+                    <li key={task.id}>
                       <Link
-                        to={`/missions/${mission.id}`}
+                        to={`/tasks/${task.id}`}
                         className="flex items-center justify-between py-4 hover:bg-hatofes-dark transition-colors -mx-4 px-4"
                       >
                         <div className="flex-1">
-                          <p className="text-hatofes-white text-sm">{mission.title}</p>
-                          {mission.description && (
-                            <p className="text-hatofes-gray text-xs mt-1 line-clamp-1">{mission.description}</p>
+                          <p className="text-hatofes-white text-sm">{task.title}</p>
+                          {task.description && (
+                            <p className="text-hatofes-gray text-xs mt-1 line-clamp-1">{task.description}</p>
                           )}
                         </div>
-                        <span className="point-badge">{mission.points}pt</span>
+                        <span className="point-badge">{task.points}pt</span>
                       </Link>
                     </li>
                   ))}
@@ -95,18 +95,18 @@ export default function MissionsPage() {
               </div>
             )}
 
-            {/* Completed Missions */}
-            {completedMissions.length > 0 && (
+            {/* Completed Tasks */}
+            {completedTasks.length > 0 && (
               <div className="card">
-                <h2 className="text-sm font-bold text-hatofes-gray-light mb-4">達成済み</h2>
+                <h2 className="text-sm font-bold text-hatofes-gray-light mb-4">完了済み</h2>
                 <ul className="divide-y divide-hatofes-gray">
-                  {completedMissions.map((mission) => (
-                    <li key={mission.id} className="py-4 opacity-60">
+                  {completedTasks.map((task) => (
+                    <li key={task.id} className="py-4 opacity-60">
                       <div className="flex items-center justify-between">
                         <div className="flex-1">
-                          <p className="text-hatofes-white text-sm line-through">{mission.title}</p>
+                          <p className="text-hatofes-white text-sm line-through">{task.title}</p>
                         </div>
-                        <span className="text-hatofes-gray text-sm">+{mission.points}pt</span>
+                        <span className="text-hatofes-gray text-sm">+{task.points}pt</span>
                       </div>
                     </li>
                   ))}

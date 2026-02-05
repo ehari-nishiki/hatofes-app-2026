@@ -5,9 +5,11 @@ interface PointRewardModalProps {
   points: number;
   reason: string;
   onClose: () => void;
+  unit?: string;
+  title?: string;
 }
 
-export function PointRewardModal({ isOpen, points, reason, onClose }: PointRewardModalProps) {
+export function PointRewardModal({ isOpen, points, reason, onClose, unit = 'pt', title = 'ポイント獲得！' }: PointRewardModalProps) {
   const [showAnimation, setShowAnimation] = useState(false);
 
   useEffect(() => {
@@ -28,7 +30,7 @@ export function PointRewardModal({ isOpen, points, reason, onClose }: PointRewar
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div
-        className={`bg-white rounded-2xl p-8 max-w-sm w-full mx-4 text-center transform transition-all duration-300 ${
+        className={`bg-hatofes-dark border border-hatofes-gray rounded-2xl p-8 max-w-sm w-full mx-4 text-center relative transform transition-all duration-300 ${
           showAnimation ? 'scale-100 opacity-100' : 'scale-95 opacity-0'
         }`}
       >
@@ -44,18 +46,18 @@ export function PointRewardModal({ isOpen, points, reason, onClose }: PointRewar
         </div>
 
         {/* Title */}
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">ポイント獲得！</h2>
+        <h2 className="text-2xl font-bold text-hatofes-white mb-2">{title}</h2>
 
         {/* Reason */}
-        <p className="text-gray-600 mb-4">{reason}</p>
+        <p className="text-hatofes-gray mb-4">{reason}</p>
 
         {/* Points */}
         <div
-          className={`text-5xl font-bold text-primary-600 mb-6 transform transition-all duration-500 ${
+          className={`text-5xl font-bold text-hatofes-accent-yellow mb-6 transform transition-all duration-500 font-display ${
             showAnimation ? 'scale-110' : 'scale-100'
           }`}
         >
-          +{points}pt
+          +{points}<span className="text-2xl ml-1">{unit}</span>
         </div>
 
         {/* Particle animation */}
@@ -64,7 +66,7 @@ export function PointRewardModal({ isOpen, points, reason, onClose }: PointRewar
             {[...Array(8)].map((_, i) => (
               <div
                 key={i}
-                className="absolute top-1/2 left-1/2 w-2 h-2 bg-primary-400 rounded-full animate-particle"
+                className="absolute top-1/2 left-1/2 w-2 h-2 bg-hatofes-accent-yellow rounded-full animate-particle"
                 style={{
                   animationDelay: `${i * 0.1}s`,
                   '--rotation': `${i * 45}deg`,
@@ -77,7 +79,7 @@ export function PointRewardModal({ isOpen, points, reason, onClose }: PointRewar
         {/* Close button */}
         <button
           onClick={onClose}
-          className="text-sm text-gray-500 hover:text-gray-700 mt-4"
+          className="text-sm text-hatofes-gray hover:text-hatofes-white mt-4"
         >
           閉じる
         </button>

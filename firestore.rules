@@ -7,12 +7,13 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Helper function to check email domain (開発中は一時的に制限解除)
+    // Helper function to check email domain
+    // Controlled by config/domainRestriction document: { enabled: true/false }
+    // exists() を先に確認しないと、ドキュメント非存在時に get().data がエラーになる
     function isValidDomain() {
-      // 本番用: return request.auth.token.email.matches('.*@g.nagano-c.ed.jp$');
-      // 開発用: 特定のメールも許可
-      return request.auth.token.email.matches('.*@g.nagano-c.ed.jp$')
-        || request.auth.token.email == 'ebi.sandwich.finland@gmail.com';
+      return !exists(/databases/$(database)/documents/config/domainRestriction) ||
+             get(/databases/$(database)/documents/config/domainRestriction).data.enabled != true ||
+             request.auth.token.email.matches('.*@g\\.nagano-c\\.ed\\.jp$');
     }
 
     // Helper function to get user data
@@ -22,12 +23,16 @@ service cloud.firestore {
 
     // Helper function to check if user is admin or staff
     function isAdminOrStaff() {
-      return isSignedIn() && getUserData().role in ['admin', 'staff'];
+      return isSignedIn() &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             getUserData().role in ['admin', 'staff'];
     }
 
     // Helper function to check if user is admin
     function isAdmin() {
-      return isSignedIn() && getUserData().role == 'admin';
+      return isSignedIn() &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             getUserData().role == 'admin';
     }
 
     // Users collection
@@ -93,13 +98,57 @@ service cloud.firestore {
       allow write: if isAdminOrStaff();
     }
 
+    // Config collection (read-only for domain restriction flag etc.)
+    match /config/{configId} {
+      allow read: if true; // must be readable by rules themselves (get() call)
+      allow write: if isAdminOrStaff();
+    }
+
+    // Feedbacks collection
+    match /feedbacks/{feedbackId} {
+      allow create: if isSignedIn() && isValidDomain();
+      allow read: if isAdminOrStaff();
+      allow update, delete: if false;
+    }
+
+    // Gacha items collection
+    match /gachaItems/{itemId} {
+      allow read: if isSignedIn() && isValidDomain();
+      allow write: if isAdminOrStaff();
+    }
+
+    // Gacha history collection
+    match /gachaHistory/{historyId} {
+      allow read: if isSignedIn() && isValidDomain() &&
+        (resource.data.userId == request.auth.uid || isAdminOrStaff());
+      allow write: if false;
+    }
+
+    // Ticket history collection
+    match /ticketHistory/{historyId} {
+      allow read: if isSignedIn() && isValidDomain() &&
+        (resource.data.userId == request.auth.uid || isAdminOrStaff());
+      allow write: if false;
+    }
+
     // Notifications collection
     match /notifications/{notificationId} {
       // Anyone authenticated can read
       allow read: if isSignedIn() && isValidDomain();
 
-      // Only admin/staff can write
-      allow write: if isAdminOrStaff();
+      // Admin/staff can write anything
+      allow create, delete: if isAdminOrStaff();
+
+      // For updates: admin/staff can update anything, regular users can only update readBy
+      allow update: if isAdminOrStaff() || (
+        isSignedIn() && isValidDomain() &&
+        // Only readBy field is changed
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readBy']) &&
+        // User is adding their own UID
+        request.resource.data.readBy.hasAll(resource.data.readBy) &&
+        request.resource.data.readBy.size() == resource.data.readBy.size() + 1 &&
+        request.auth.uid in request.resource.data.readBy
+      );
     }
   }
 }

@@ -4,7 +4,13 @@ import { useAuth } from '@/contexts/AuthContext'
 import { auth } from '@/lib/firebase'
 
 export default function ProfilePage() {
-  const { userData } = useAuth()
+  const { currentUser, userData } = useAuth()
+
+  // Generate short user ID from Firebase UID
+  const getUserId = () => {
+    if (!currentUser) return ''
+    return currentUser.uid.substring(0, 8).toUpperCase()
+  }
 
   const handleSignOut = async () => {
     try {
@@ -71,6 +77,10 @@ export default function ProfilePage() {
           <h2 className="text-lg font-bold text-hatofes-white mb-4">アカウント情報</h2>
           <div className="space-y-4">
             <div>
+              <p className="text-hatofes-gray-light text-sm mb-1">ユーザーID</p>
+              <p className="text-hatofes-white font-mono">{getUserId()}</p>
+            </div>
+            <div>
               <p className="text-hatofes-gray-light text-sm mb-1">メールアドレス</p>
               <p className="text-hatofes-white">{userData.email}</p>
             </div>
@@ -96,9 +106,9 @@ export default function ProfilePage() {
           <button className="btn-sub w-full py-3 rounded-full" disabled>
             プロフィール画像を変更
           </button>
-          <button className="btn-sub w-full py-3 rounded-full" disabled>
+          <Link to="/settings" className="btn-sub w-full py-3 rounded-full block text-center">
             設定
-          </button>
+          </Link>
           <button
             onClick={handleSignOut}
             className="w-full py-3 rounded-full bg-red-500/20 text-red-500 hover:bg-red-500/30 transition-colors"
@@ -108,11 +118,10 @@ export default function ProfilePage() {
         </section>
 
         {/* Back Button */}
-        <Link
-          to="/home"
-          className="block text-center text-hatofes-gray-light hover:text-hatofes-accent-yellow transition-colors"
-        >
-          ← ホームに戻る
+        <Link to="/home" className="block">
+          <div className="btn-sub w-full py-3 text-center">
+            ホームに戻る
+          </div>
         </Link>
       </main>
     </div>
