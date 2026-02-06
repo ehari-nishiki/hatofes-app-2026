@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.pullGacha = exports.grantGachaTickets = exports.changeUsername = exports.updateUserRole = exports.submitSurveyResponse = exports.grantPoints = exports.awardLoginBonus = void 0;
+exports.pullGacha = exports.submitTetrisScore = exports.clearPoints = exports.deductPoints = exports.bulkDeductGachaTickets = exports.bulkGrantGachaTickets = exports.clearGachaTickets = exports.deductGachaTickets = exports.grantGachaTickets = exports.changeUsername = exports.updateUserRole = exports.submitSurveyResponse = exports.bulkDeductPoints = exports.bulkGrantPoints = exports.grantPoints = exports.updateLoginBonusConfig = exports.awardLoginBonus = void 0;
 const functions = __importStar(require("firebase-functions/v2"));
 const admin = __importStar(require("firebase-admin"));
 const googleapis_1 = require("googleapis");
@@ -127,7 +127,7 @@ const WORD_LIST_C = [
     '煮', 'ホイル焼き', 'コロネ', 'サラダ', 'プリン',
     'キムチ', '(生)', '炒め', '串', 'おにぎり',
 ];
-// ログインボーナス付与
+// ログインボーナス付与（設定可能）
 exports.awardLoginBonus = functions.https.onCall(async (request) => {
     if (!request.auth) {
         throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
@@ -150,39 +150,71 @@ exports.awardLoginBonus = functions.https.onCall(async (request) => {
     if (userData.lastLoginDate === today) {
         return { success: false, message: '今日のログインボーナスは既に受け取っています' };
     }
-    const BONUS_POINTS = 10;
+    // ログインボーナス設定を取得（デフォルト: 10pt + 1チケット）
+    const configDoc = await db.collection('config').doc('loginBonus').get();
+    const bonusPoints = configDoc.exists ? (configDoc.data().points || 10) : 10;
+    const bonusTickets = configDoc.exists ? (configDoc.data().tickets || 1) : 1;
     const classRef = getClassRef(userData);
     await db.runTransaction(async (transaction) => {
         // --- reads first ---
-        const classDoc = classRef ? await transaction.get(classRef) : null;
+        const classDoc = classRef && bonusPoints > 0 ? await transaction.get(classRef) : null;
         // --- writes ---
-        const historyRef = db.collection('pointHistory').doc();
-        transaction.set(historyRef, {
-            userId: uid,
-            points: BONUS_POINTS,
-            reason: 'login_bonus',
-            details: `ログインボーナス（${today}）`,
-            grantedBy: 'system',
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-        transaction.update(userDocRef, {
-            totalPoints: admin.firestore.FieldValue.increment(BONUS_POINTS),
-            lastLoginDate: today,
-            gachaTickets: admin.firestore.FieldValue.increment(1),
-        });
-        if (classRef && classDoc) {
-            writeClassPoints(transaction, classRef, classDoc, userData, BONUS_POINTS);
+        if (bonusPoints > 0) {
+            const historyRef = db.collection('pointHistory').doc();
+            transaction.set(historyRef, {
+                userId: uid,
+                points: bonusPoints,
+                reason: 'login_bonus',
+                details: `ログインボーナス（${today}）`,
+                grantedBy: 'system',
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
         }
-        const ticketHistoryRef = db.collection('ticketHistory').doc();
-        transaction.set(ticketHistoryRef, {
-            userId: uid,
-            tickets: 1,
-            reason: 'admin_grant',
-            details: `ログインボーナス付与チケット（${today}）`,
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        transaction.update(userDocRef, {
+            totalPoints: admin.firestore.FieldValue.increment(bonusPoints),
+            lastLoginDate: today,
+            gachaTickets: admin.firestore.FieldValue.increment(bonusTickets),
         });
+        if (classRef && classDoc && bonusPoints > 0) {
+            writeClassPoints(transaction, classRef, classDoc, userData, bonusPoints);
+        }
+        if (bonusTickets > 0) {
+            const ticketHistoryRef = db.collection('ticketHistory').doc();
+            transaction.set(ticketHistoryRef, {
+                userId: uid,
+                tickets: bonusTickets,
+                reason: 'admin_grant',
+                details: `ログインボーナス付与チケット（${today}）`,
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+        }
     });
-    return { success: true, message: 'ログインボーナスを付与しました', points: BONUS_POINTS, tickets: 1 };
+    return { success: true, message: 'ログインボーナスを付与しました', points: bonusPoints, tickets: bonusTickets };
+});
+// ログインボーナス設定更新（admin用）
+exports.updateLoginBonusConfig = functions.https.onCall(async (request) => {
+    if (!request.auth) {
+        throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+    }
+    const email = request.auth.token?.email || '';
+    if (!isValidDomain(email)) {
+        throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
+    }
+    const adminDoc = await db.collection('users').doc(request.auth.uid).get();
+    if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
+        throw new functions.https.HttpsError('permission-denied', '管理者のみ使用可能です');
+    }
+    const { points, tickets } = request.data;
+    if (typeof points !== 'number' || points < 0 || typeof tickets !== 'number' || tickets < 0) {
+        throw new functions.https.HttpsError('invalid-argument', 'パラメータが不正です');
+    }
+    await db.collection('config').doc('loginBonus').set({
+        points,
+        tickets,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedBy: request.auth.uid,
+    });
+    return { success: true, message: 'ログインボーナス設定を更新しました' };
 });
 // 管理者によるポイント付与
 exports.grantPoints = functions.https.onCall(async (request) => {
@@ -229,6 +261,144 @@ exports.grantPoints = functions.https.onCall(async (request) => {
         }
     });
     return { success: true, message: 'ポイントを付与しました' };
+});
+// 一括ポイント付与（admin/staff用）
+exports.bulkGrantPoints = functions.https.onCall(async (request) => {
+    if (!request.auth) {
+        throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+    }
+    const email = request.auth.token?.email || '';
+    if (!isValidDomain(email)) {
+        throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
+    }
+    const adminDoc = await db.collection('users').doc(request.auth.uid).get();
+    if (!adminDoc.exists || !['admin', 'staff'].includes(adminDoc.data().role)) {
+        throw new functions.https.HttpsError('permission-denied', '管理者のみ使用可能です');
+    }
+    const { userIds, points, reason, details } = request.data;
+    if (!Array.isArray(userIds) || userIds.length === 0 || typeof points !== 'number' || points <= 0) {
+        throw new functions.https.HttpsError('invalid-argument', 'パラメータが不正です');
+    }
+    // 最大100ユーザーまで
+    if (userIds.length > 100) {
+        throw new functions.https.HttpsError('invalid-argument', '一度に操作できるのは100ユーザーまでです');
+    }
+    let successCount = 0;
+    const errors = [];
+    for (const userId of userIds) {
+        try {
+            const userDocRef = db.collection('users').doc(userId);
+            const userDoc = await userDocRef.get();
+            if (!userDoc.exists) {
+                errors.push(`${userId}: ユーザーが見つかりません`);
+                continue;
+            }
+            const userData = userDoc.data();
+            const classRef = getClassRef(userData);
+            await db.runTransaction(async (transaction) => {
+                const classDoc = classRef ? await transaction.get(classRef) : null;
+                const historyRef = db.collection('pointHistory').doc();
+                transaction.set(historyRef, {
+                    userId,
+                    points,
+                    reason: reason || 'admin_grant',
+                    details: details || '一括付与',
+                    grantedBy: request.auth.uid,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                });
+                transaction.update(userDocRef, {
+                    totalPoints: admin.firestore.FieldValue.increment(points),
+                });
+                if (classRef && classDoc) {
+                    writeClassPoints(transaction, classRef, classDoc, userData, points);
+                }
+            });
+            successCount++;
+        }
+        catch (err) {
+            errors.push(`${userId}: ${String(err)}`);
+        }
+    }
+    return {
+        success: true,
+        message: `${successCount}/${userIds.length}ユーザーに付与しました`,
+        successCount,
+        totalCount: userIds.length,
+        errors: errors.length > 0 ? errors : undefined,
+    };
+});
+// 一括ポイント剥奪（admin/staff用）
+exports.bulkDeductPoints = functions.https.onCall(async (request) => {
+    if (!request.auth) {
+        throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+    }
+    const email = request.auth.token?.email || '';
+    if (!isValidDomain(email)) {
+        throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
+    }
+    const adminDoc = await db.collection('users').doc(request.auth.uid).get();
+    if (!adminDoc.exists || !['admin', 'staff'].includes(adminDoc.data().role)) {
+        throw new functions.https.HttpsError('permission-denied', '管理者のみ使用可能です');
+    }
+    const { userIds, points, reason, details } = request.data;
+    if (!Array.isArray(userIds) || userIds.length === 0 || typeof points !== 'number' || points <= 0) {
+        throw new functions.https.HttpsError('invalid-argument', 'パラメータが不正です');
+    }
+    if (userIds.length > 100) {
+        throw new functions.https.HttpsError('invalid-argument', '一度に操作できるのは100ユーザーまでです');
+    }
+    let successCount = 0;
+    let totalDeducted = 0;
+    const errors = [];
+    for (const userId of userIds) {
+        try {
+            const userDocRef = db.collection('users').doc(userId);
+            const userDoc = await userDocRef.get();
+            if (!userDoc.exists) {
+                errors.push(`${userId}: ユーザーが見つかりません`);
+                continue;
+            }
+            const userData = userDoc.data();
+            const currentPoints = userData.totalPoints || 0;
+            const actualDeduct = Math.min(points, currentPoints);
+            if (actualDeduct === 0) {
+                errors.push(`${userId}: ポイントが不足しています`);
+                continue;
+            }
+            const classRef = getClassRef(userData);
+            await db.runTransaction(async (transaction) => {
+                const classDoc = classRef ? await transaction.get(classRef) : null;
+                const historyRef = db.collection('pointHistory').doc();
+                transaction.set(historyRef, {
+                    userId,
+                    points: -actualDeduct,
+                    reason: reason || 'admin_deduct',
+                    details: details || '一括剥奪',
+                    grantedBy: request.auth.uid,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                });
+                transaction.update(userDocRef, {
+                    totalPoints: admin.firestore.FieldValue.increment(-actualDeduct),
+                });
+                if (classRef && classDoc) {
+                    writeClassPoints(transaction, classRef, classDoc, userData, -actualDeduct);
+                }
+            });
+            successCount++;
+            totalDeducted += actualDeduct;
+        }
+        catch (err) {
+            errors.push(`${userId}: ${String(err)}`);
+        }
+    }
+    return {
+        success: true,
+        message: `${successCount}/${userIds.length}ユーザーから剥奪しました`,
+        successCount,
+        totalCount: userIds.length,
+        totalDeducted,
+        errors: errors.length > 0 ? errors : undefined,
+    };
 });
 // アンケート回答時のポイント付与
 // GOOGLE_SHEETS_KEY シークレットが設定されていれば Google Sheets 同期を行う
@@ -447,6 +617,447 @@ exports.grantGachaTickets = functions.https.onCall(async (request) => {
         });
     });
     return { success: true, message: `${resolvedUsername}さんに${tickets}枚のチケットを付与しました` };
+});
+// チケット剥奪（admin/staff用）
+exports.deductGachaTickets = functions.https.onCall(async (request) => {
+    if (!request.auth) {
+        throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+    }
+    const email = request.auth.token?.email || '';
+    if (!isValidDomain(email)) {
+        throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
+    }
+    const adminDoc = await db.collection('users').doc(request.auth.uid).get();
+    if (!adminDoc.exists || !['admin', 'staff'].includes(adminDoc.data().role)) {
+        throw new functions.https.HttpsError('permission-denied', '管理者のみ使用可能です');
+    }
+    const { userId, tickets, details } = request.data;
+    if (!userId || typeof tickets !== 'number' || tickets <= 0) {
+        throw new functions.https.HttpsError('invalid-argument', 'パラメータが不正です');
+    }
+    const userDocRef = db.collection('users').doc(userId);
+    const userDoc = await userDocRef.get();
+    if (!userDoc.exists) {
+        throw new functions.https.HttpsError('not-found', 'ユーザーが見つかりません');
+    }
+    const userData = userDoc.data();
+    const currentTickets = userData.gachaTickets || 0;
+    const actualDeduct = Math.min(tickets, currentTickets);
+    if (actualDeduct === 0) {
+        return { success: false, message: 'チケットが足りません', actualDeducted: 0 };
+    }
+    await db.runTransaction(async (transaction) => {
+        const historyRef = db.collection('ticketHistory').doc();
+        transaction.set(historyRef, {
+            userId,
+            tickets: -actualDeduct,
+            reason: 'admin_deduct',
+            details: details || '管理者による剥奪',
+            grantedBy: request.auth.uid,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        transaction.update(userDocRef, {
+            gachaTickets: admin.firestore.FieldValue.increment(-actualDeduct),
+        });
+    });
+    return { success: true, message: `${actualDeduct}枚を剥奪しました`, actualDeducted: actualDeduct };
+});
+// チケットクリア（admin用）
+exports.clearGachaTickets = functions.https.onCall(async (request) => {
+    if (!request.auth) {
+        throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+    }
+    const email = request.auth.token?.email || '';
+    if (!isValidDomain(email)) {
+        throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
+    }
+    const adminDoc = await db.collection('users').doc(request.auth.uid).get();
+    if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
+        throw new functions.https.HttpsError('permission-denied', '管理者のみ使用可能です');
+    }
+    const { userId } = request.data;
+    if (!userId) {
+        throw new functions.https.HttpsError('invalid-argument', 'パラメータが不正です');
+    }
+    const userDocRef = db.collection('users').doc(userId);
+    const userDoc = await userDocRef.get();
+    if (!userDoc.exists) {
+        throw new functions.https.HttpsError('not-found', 'ユーザーが見つかりません');
+    }
+    const userData = userDoc.data();
+    const currentTickets = userData.gachaTickets || 0;
+    if (currentTickets === 0) {
+        return { success: true, message: 'チケットは既に0です', clearedAmount: 0 };
+    }
+    await db.runTransaction(async (transaction) => {
+        const historyRef = db.collection('ticketHistory').doc();
+        transaction.set(historyRef, {
+            userId,
+            tickets: -currentTickets,
+            reason: 'admin_clear',
+            details: 'チケットクリア（全リセット）',
+            grantedBy: request.auth.uid,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        transaction.update(userDocRef, {
+            gachaTickets: 0,
+        });
+    });
+    return { success: true, message: `${currentTickets}枚をクリアしました`, clearedAmount: currentTickets };
+});
+// 一括チケット付与（admin/staff用）
+exports.bulkGrantGachaTickets = functions.https.onCall(async (request) => {
+    if (!request.auth) {
+        throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+    }
+    const email = request.auth.token?.email || '';
+    if (!isValidDomain(email)) {
+        throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
+    }
+    const adminDoc = await db.collection('users').doc(request.auth.uid).get();
+    if (!adminDoc.exists || !['admin', 'staff'].includes(adminDoc.data().role)) {
+        throw new functions.https.HttpsError('permission-denied', '管理者のみ使用可能です');
+    }
+    const { userIds, tickets, details } = request.data;
+    if (!Array.isArray(userIds) || userIds.length === 0 || typeof tickets !== 'number' || tickets <= 0) {
+        throw new functions.https.HttpsError('invalid-argument', 'パラメータが不正です');
+    }
+    if (userIds.length > 100) {
+        throw new functions.https.HttpsError('invalid-argument', '一度に操作できるのは100ユーザーまでです');
+    }
+    let successCount = 0;
+    const errors = [];
+    for (const userId of userIds) {
+        try {
+            const userDocRef = db.collection('users').doc(userId);
+            const userDoc = await userDocRef.get();
+            if (!userDoc.exists) {
+                errors.push(`${userId}: ユーザーが見つかりません`);
+                continue;
+            }
+            await db.runTransaction(async (transaction) => {
+                const historyRef = db.collection('ticketHistory').doc();
+                transaction.set(historyRef, {
+                    userId,
+                    tickets,
+                    reason: 'admin_grant',
+                    details: details || '一括付与',
+                    grantedBy: request.auth.uid,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                });
+                transaction.update(userDocRef, {
+                    gachaTickets: admin.firestore.FieldValue.increment(tickets),
+                });
+            });
+            successCount++;
+        }
+        catch (err) {
+            errors.push(`${userId}: ${String(err)}`);
+        }
+    }
+    return {
+        success: true,
+        message: `${successCount}/${userIds.length}ユーザーに付与しました`,
+        successCount,
+        totalCount: userIds.length,
+        errors: errors.length > 0 ? errors : undefined,
+    };
+});
+// 一括チケット剥奪（admin/staff用）
+exports.bulkDeductGachaTickets = functions.https.onCall(async (request) => {
+    if (!request.auth) {
+        throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+    }
+    const email = request.auth.token?.email || '';
+    if (!isValidDomain(email)) {
+        throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
+    }
+    const adminDoc = await db.collection('users').doc(request.auth.uid).get();
+    if (!adminDoc.exists || !['admin', 'staff'].includes(adminDoc.data().role)) {
+        throw new functions.https.HttpsError('permission-denied', '管理者のみ使用可能です');
+    }
+    const { userIds, tickets, details } = request.data;
+    if (!Array.isArray(userIds) || userIds.length === 0 || typeof tickets !== 'number' || tickets <= 0) {
+        throw new functions.https.HttpsError('invalid-argument', 'パラメータが不正です');
+    }
+    if (userIds.length > 100) {
+        throw new functions.https.HttpsError('invalid-argument', '一度に操作できるのは100ユーザーまでです');
+    }
+    let successCount = 0;
+    let totalDeducted = 0;
+    const errors = [];
+    for (const userId of userIds) {
+        try {
+            const userDocRef = db.collection('users').doc(userId);
+            const userDoc = await userDocRef.get();
+            if (!userDoc.exists) {
+                errors.push(`${userId}: ユーザーが見つかりません`);
+                continue;
+            }
+            const userData = userDoc.data();
+            const currentTickets = userData.gachaTickets || 0;
+            const actualDeduct = Math.min(tickets, currentTickets);
+            if (actualDeduct === 0) {
+                errors.push(`${userId}: チケットが不足しています`);
+                continue;
+            }
+            await db.runTransaction(async (transaction) => {
+                const historyRef = db.collection('ticketHistory').doc();
+                transaction.set(historyRef, {
+                    userId,
+                    tickets: -actualDeduct,
+                    reason: 'admin_deduct',
+                    details: details || '一括剥奪',
+                    grantedBy: request.auth.uid,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                });
+                transaction.update(userDocRef, {
+                    gachaTickets: admin.firestore.FieldValue.increment(-actualDeduct),
+                });
+            });
+            successCount++;
+            totalDeducted += actualDeduct;
+        }
+        catch (err) {
+            errors.push(`${userId}: ${String(err)}`);
+        }
+    }
+    return {
+        success: true,
+        message: `${successCount}/${userIds.length}ユーザーから剥奪しました`,
+        successCount,
+        totalCount: userIds.length,
+        totalDeducted,
+        errors: errors.length > 0 ? errors : undefined,
+    };
+});
+// 管理者によるポイント剥奪
+exports.deductPoints = functions.https.onCall(async (request) => {
+    if (!request.auth) {
+        throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+    }
+    const email = request.auth.token?.email || '';
+    if (!isValidDomain(email)) {
+        throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
+    }
+    const adminDoc = await db.collection('users').doc(request.auth.uid).get();
+    if (!adminDoc.exists || !['admin', 'staff'].includes(adminDoc.data().role)) {
+        throw new functions.https.HttpsError('permission-denied', '管理者のみ使用可能です');
+    }
+    const { userId, points, reason, details } = request.data;
+    if (!userId || typeof points !== 'number' || points <= 0) {
+        throw new functions.https.HttpsError('invalid-argument', 'パラメータが不正です');
+    }
+    const userDocRef = db.collection('users').doc(userId);
+    const userDoc = await userDocRef.get();
+    if (!userDoc.exists) {
+        throw new functions.https.HttpsError('not-found', 'ユーザーが見つかりません');
+    }
+    const userData = userDoc.data();
+    const currentPoints = userData.totalPoints || 0;
+    const actualDeduct = Math.min(points, currentPoints);
+    if (actualDeduct === 0) {
+        return { success: false, message: 'ポイントが足りません', actualDeducted: 0 };
+    }
+    const classRef = getClassRef(userData);
+    await db.runTransaction(async (transaction) => {
+        const classDoc = classRef ? await transaction.get(classRef) : null;
+        const historyRef = db.collection('pointHistory').doc();
+        transaction.set(historyRef, {
+            userId,
+            points: -actualDeduct,
+            reason: reason || 'admin_deduct',
+            details: details || '管理者による剥奪',
+            grantedBy: request.auth.uid,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        transaction.update(userDocRef, {
+            totalPoints: admin.firestore.FieldValue.increment(-actualDeduct),
+        });
+        if (classRef && classDoc) {
+            writeClassPoints(transaction, classRef, classDoc, userData, -actualDeduct);
+        }
+    });
+    return { success: true, message: `${actualDeduct}ptを剥奪しました`, actualDeducted: actualDeduct };
+});
+// 管理者によるポイントクリア
+exports.clearPoints = functions.https.onCall(async (request) => {
+    if (!request.auth) {
+        throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+    }
+    const email = request.auth.token?.email || '';
+    if (!isValidDomain(email)) {
+        throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
+    }
+    const adminDoc = await db.collection('users').doc(request.auth.uid).get();
+    if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
+        throw new functions.https.HttpsError('permission-denied', '管理者のみ使用可能です');
+    }
+    const { userId } = request.data;
+    if (!userId) {
+        throw new functions.https.HttpsError('invalid-argument', 'パラメータが不正です');
+    }
+    const userDocRef = db.collection('users').doc(userId);
+    const userDoc = await userDocRef.get();
+    if (!userDoc.exists) {
+        throw new functions.https.HttpsError('not-found', 'ユーザーが見つかりません');
+    }
+    const userData = userDoc.data();
+    const currentPoints = userData.totalPoints || 0;
+    if (currentPoints === 0) {
+        return { success: true, message: 'ポイントは既に0です', clearedAmount: 0 };
+    }
+    const classRef = getClassRef(userData);
+    await db.runTransaction(async (transaction) => {
+        const classDoc = classRef ? await transaction.get(classRef) : null;
+        const historyRef = db.collection('pointHistory').doc();
+        transaction.set(historyRef, {
+            userId,
+            points: -currentPoints,
+            reason: 'admin_clear',
+            details: 'ポイントクリア（全リセット）',
+            grantedBy: request.auth.uid,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        transaction.update(userDocRef, {
+            totalPoints: 0,
+        });
+        if (classRef && classDoc) {
+            writeClassPoints(transaction, classRef, classDoc, userData, -currentPoints);
+        }
+    });
+    return { success: true, message: `${currentPoints}ptをクリアしました`, clearedAmount: currentPoints };
+});
+// テトリススコア提出（生徒のみ）— 日別カウント制
+exports.submitTetrisScore = functions.https.onCall(async (request) => {
+    if (!request.auth) {
+        throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+    }
+    const email = request.auth.token?.email || '';
+    if (!isValidDomain(email)) {
+        throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
+    }
+    const uid = request.auth.uid;
+    const userDocRef = db.collection('users').doc(uid);
+    const userDoc = await userDocRef.get();
+    if (!userDoc.exists) {
+        throw new functions.https.HttpsError('not-found', 'ユーザーが見つかりません');
+    }
+    const userData = userDoc.data();
+    if (userData.role !== 'student') {
+        return { success: true, pointsAwarded: 0, totalToday: 0, maxToday: 100 };
+    }
+    const { linesCleared, score } = request.data;
+    if (typeof linesCleared !== 'number' || linesCleared < 0) {
+        throw new functions.https.HttpsError('invalid-argument', 'パラメータが不正です');
+    }
+    if (score !== undefined && (typeof score !== 'number' || score < 0)) {
+        throw new functions.https.HttpsError('invalid-argument', 'スコアが不正です');
+    }
+    // JST で今日の日付
+    const now = new Date();
+    const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+    const today = jst.toISOString().split('T')[0];
+    // 今日の累計列数を取得
+    const tetrisStatsRef = db.collection('tetrisStats').doc(uid);
+    const tetrisStatsDoc = await tetrisStatsRef.get();
+    let currentTotal = 0;
+    if (tetrisStatsDoc.exists) {
+        const statsData = tetrisStatsDoc.data();
+        if (statsData.date === today) {
+            currentTotal = statsData.totalLinesCleared || 0;
+        }
+    }
+    // 新しい累計
+    const newTotal = currentTotal + linesCleared;
+    // ポイント計算ロジック：
+    // 1~10列: 列数×10pt、11~100列: 列数×1pt、101列~: ポイントなし
+    // 既に100列を超えている場合は、もうポイントなし
+    let pointsAwarded = 0;
+    if (currentTotal >= 100) {
+        // 既に100列超えている → もうポイントはもらえない
+        pointsAwarded = 0;
+    }
+    else if (newTotal <= 10) {
+        // まだ10列以下 → 今回の列数×10pt
+        pointsAwarded = linesCleared * 10;
+    }
+    else if (currentTotal < 10 && newTotal > 10) {
+        // 10列をまたぐ場合
+        // 10列までの分は×10pt、それ以降は×1pt（ただし100列まで）
+        const pointsUpTo10 = (10 - currentTotal) * 10;
+        const linesAfter10 = Math.min(newTotal - 10, 100 - 10);
+        const pointsAfter10 = linesAfter10 * 1;
+        pointsAwarded = pointsUpTo10 + pointsAfter10;
+    }
+    else if (currentTotal >= 10 && newTotal <= 100) {
+        // 11~100列の範囲内 → 今回の列数×1pt
+        pointsAwarded = linesCleared * 1;
+    }
+    else if (currentTotal < 100 && newTotal > 100) {
+        // 100列をまたぐ場合
+        const linesUpTo100 = 100 - currentTotal;
+        pointsAwarded = linesUpTo100 * 1;
+    }
+    else {
+        // 101列以降 → ポイントなし
+        pointsAwarded = 0;
+    }
+    const classRef = getClassRef(userData);
+    const tetrisScoreRef = db.collection('tetrisScores').doc(uid);
+    await db.runTransaction(async (transaction) => {
+        // --- reads first ---
+        const classDoc = classRef && pointsAwarded > 0 ? await transaction.get(classRef) : null;
+        const tetrisScoreDoc = await transaction.get(tetrisScoreRef);
+        // --- writes ---
+        // tetrisStats を更新
+        transaction.set(tetrisStatsRef, {
+            date: today,
+            totalLinesCleared: newTotal,
+            lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        // tetrisScores を更新（ランキング用）
+        if (score !== undefined) {
+            const existingData = tetrisScoreDoc.exists ? tetrisScoreDoc.data() : null;
+            const currentHighScore = existingData?.highScore || 0;
+            const currentMaxLines = existingData?.maxLines || 0;
+            const currentTotalGames = existingData?.totalGames || 0;
+            transaction.set(tetrisScoreRef, {
+                userId: uid,
+                username: userData.username,
+                grade: userData.grade,
+                class: userData.class,
+                highScore: Math.max(currentHighScore, score),
+                maxLines: Math.max(currentMaxLines, linesCleared),
+                totalGames: currentTotalGames + 1,
+                lastPlayedAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+        }
+        if (pointsAwarded > 0) {
+            transaction.update(userDocRef, {
+                totalPoints: admin.firestore.FieldValue.increment(pointsAwarded),
+            });
+            const historyRef = db.collection('pointHistory').doc();
+            transaction.set(historyRef, {
+                userId: uid,
+                points: pointsAwarded,
+                reason: 'game_result',
+                details: `テトリス（${linesCleared}列消し / 本日累計${newTotal}列）`,
+                grantedBy: 'system',
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            if (classRef && classDoc) {
+                writeClassPoints(transaction, classRef, classDoc, userData, pointsAwarded);
+            }
+        }
+    });
+    return {
+        success: true,
+        pointsAwarded,
+        totalToday: newTotal,
+        maxToday: 100,
+        message: newTotal > 100 ? '本日の上限（100列）に達しました' : undefined
+    };
 });
 // ガチャを引く
 exports.pullGacha = functions.https.onCall(async (request) => {

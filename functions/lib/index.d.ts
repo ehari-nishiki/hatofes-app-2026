@@ -7,12 +7,31 @@ export declare const awardLoginBonus: functions.https.CallableFunction<any, Prom
 } | {
     success: boolean;
     message: string;
-    points: number;
-    tickets: number;
+    points: any;
+    tickets: any;
+}>, unknown>;
+export declare const updateLoginBonusConfig: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    message: string;
 }>, unknown>;
 export declare const grantPoints: functions.https.CallableFunction<any, Promise<{
     success: boolean;
     message: string;
+}>, unknown>;
+export declare const bulkGrantPoints: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    message: string;
+    successCount: number;
+    totalCount: number;
+    errors: string[] | undefined;
+}>, unknown>;
+export declare const bulkDeductPoints: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    message: string;
+    successCount: number;
+    totalCount: number;
+    totalDeducted: number;
+    errors: string[] | undefined;
 }>, unknown>;
 export declare const submitSurveyResponse: functions.https.CallableFunction<any, Promise<{
     success: boolean;
@@ -31,6 +50,54 @@ export declare const changeUsername: functions.https.CallableFunction<any, Promi
 export declare const grantGachaTickets: functions.https.CallableFunction<any, Promise<{
     success: boolean;
     message: string;
+}>, unknown>;
+export declare const deductGachaTickets: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    message: string;
+    actualDeducted: number;
+}>, unknown>;
+export declare const clearGachaTickets: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    message: string;
+    clearedAmount: any;
+}>, unknown>;
+export declare const bulkGrantGachaTickets: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    message: string;
+    successCount: number;
+    totalCount: number;
+    errors: string[] | undefined;
+}>, unknown>;
+export declare const bulkDeductGachaTickets: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    message: string;
+    successCount: number;
+    totalCount: number;
+    totalDeducted: number;
+    errors: string[] | undefined;
+}>, unknown>;
+export declare const deductPoints: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    message: string;
+    actualDeducted: number;
+}>, unknown>;
+export declare const clearPoints: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    message: string;
+    clearedAmount: any;
+}>, unknown>;
+export declare const submitTetrisScore: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    pointsAwarded: number;
+    totalToday: number;
+    maxToday: number;
+    message?: undefined;
+} | {
+    success: boolean;
+    pointsAwarded: number;
+    totalToday: number;
+    maxToday: number;
+    message: string | undefined;
 }>, unknown>;
 export declare const pullGacha: functions.https.CallableFunction<any, Promise<{
     success: boolean;

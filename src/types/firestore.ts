@@ -31,7 +31,7 @@ export interface Feedback {
 }
 
 // Point history reasons
-export type PointReason = 'login_bonus' | 'survey' | 'admin_grant' | 'game_result';
+export type PointReason = 'login_bonus' | 'survey' | 'admin_grant' | 'admin_deduct' | 'admin_clear' | 'game_result';
 
 // Point history document
 export interface PointHistory {
@@ -163,4 +163,17 @@ export interface TicketHistoryEntry {
   details: string;
   grantedBy?: string;
   createdAt: Timestamp;
+}
+
+// Tetris score document
+export interface TetrisScore {
+  id?: string;
+  userId: string;
+  username: string;
+  grade?: number;
+  class?: string;
+  highScore: number; // 最高スコア
+  maxLines: number; // 最高消し行数
+  totalGames: number; // プレイ回数
+  lastPlayedAt: Timestamp;
 }
