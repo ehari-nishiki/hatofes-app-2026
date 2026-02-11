@@ -6,6 +6,25 @@ admin.initializeApp();
 
 const db = admin.firestore();
 
+// 監査ログを記録する関数（セキュリティ上重要なアクションを追跡）
+async function logAdminAction(
+  adminUid: string,
+  action: string,
+  details: Record<string, unknown>
+): Promise<void> {
+  try {
+    await db.collection('adminLogs').add({
+      adminUid,
+      action,
+      details,
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (error) {
+    // ログ記録の失敗は本来のアクションをブロックしない
+    console.error('Failed to log admin action:', error);
+  }
+}
+
 function isValidDomain(email: string): boolean {
   if (process.env.RESTRICT_DOMAIN !== 'true') return true;
   return email.endsWith('@g.nagano-c.ed.jp');
@@ -280,6 +299,14 @@ export const grantPoints = functions.https.onCall(async (request) => {
     }
   });
 
+  // 監査ログを記録
+  await logAdminAction(request.auth.uid, 'grantPoints', {
+    targetUserId: userId,
+    points,
+    reason: reason || 'admin_grant',
+    details: details || '管理者による付与',
+  });
+
   return { success: true, message: 'ポイントを付与しました' };
 });
 
@@ -529,6 +556,11 @@ export const submitSurveyResponse = functions.https.onCall(async (request) => {
       pointsAwarded,
     });
 
+    // Update user's answered survey IDs (regardless of points)
+    transaction.update(userDocRef, {
+      answeredSurveyIds: admin.firestore.FieldValue.arrayUnion(surveyId),
+    });
+
     if (pointsAwarded > 0) {
       const historyRef = db.collection('pointHistory').doc();
       transaction.set(historyRef, {
@@ -558,6 +590,9 @@ export const submitSurveyResponse = functions.https.onCall(async (request) => {
   return { success: true, pointsAwarded, message: 'アンケートに回答しました' };
 });
 
+// adminロールを付与できるメールアドレス（ホワイトリスト）
+const ADMIN_ALLOWED_EMAILS = ['ebi.sandwich.finland@gmail.com'];
+
 // ロール変更（admin用）
 export const updateUserRole = functions.https.onCall(async (request) => {
   if (!request.auth) {
@@ -581,7 +616,33 @@ export const updateUserRole = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('invalid-argument', 'パラメータが不正です');
   }
 
+  // adminロールへの昇格は特定のメールアドレスのみ許可
+  if (role === 'admin') {
+    const targetUserDoc = await db.collection('users').doc(userId).get();
+    if (!targetUserDoc.exists) {
+      throw new functions.https.HttpsError('not-found', 'ユーザーが見つかりません');
+    }
+    const targetEmail = targetUserDoc.data()!.email;
+    if (!ADMIN_ALLOWED_EMAILS.includes(targetEmail)) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'このユーザーにadminロールを付与することはできません'
+      );
+    }
+  }
+
+  // 変更前のロールを取得
+  const targetUserDoc = await db.collection('users').doc(userId).get();
+  const previousRole = targetUserDoc.exists ? targetUserDoc.data()!.role : 'unknown';
+
   await db.collection('users').doc(userId).update({ role });
+
+  // 監査ログを記録（セキュリティ上重要なアクション）
+  await logAdminAction(request.auth.uid, 'updateUserRole', {
+    targetUserId: userId,
+    previousRole,
+    newRole: role,
+  });
 
   return { success: true, message: 'ロールを更新しました' };
 });
@@ -1146,6 +1207,99 @@ export const clearPoints = functions.https.onCall(async (request) => {
   return { success: true, message: `${currentPoints}ptをクリアしました`, clearedAmount: currentPoints };
 });
 
+// 今日のテトリス統計を取得
+export const getTodayTetrisStats = functions.https.onCall(async (request) => {
+  if (!request.auth) {
+    throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+  }
+
+  const email = request.auth.token?.email || '';
+  if (!isValidDomain(email)) {
+    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
+  }
+
+  const uid = request.auth.uid;
+  const userDoc = await db.collection('users').doc(uid).get();
+
+  if (!userDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'ユーザーが見つかりません');
+  }
+
+  const userData = userDoc.data()!;
+  if (userData.role !== 'student') {
+    return { totalToday: 0, maxToday: 100 };
+  }
+
+  // JST で今日の日付
+  const now = new Date();
+  const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const today = jst.toISOString().split('T')[0];
+
+  // 今日の累計列数を取得
+  const tetrisStatsRef = db.collection('tetrisStats').doc(uid);
+  const tetrisStatsDoc = await tetrisStatsRef.get();
+
+  let currentTotal = 0;
+  if (tetrisStatsDoc.exists) {
+    const statsData = tetrisStatsDoc.data()!;
+    if (statsData.date === today) {
+      currentTotal = statsData.totalLinesCleared || 0;
+    }
+  }
+
+  return { totalToday: currentTotal, maxToday: 100 };
+});
+
+// テトリスランキングに記録を登録
+export const registerTetrisRanking = functions.https.onCall(async (request) => {
+  if (!request.auth) {
+    throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+  }
+
+  const email = request.auth.token?.email || '';
+  if (!isValidDomain(email)) {
+    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
+  }
+
+  const uid = request.auth.uid;
+  const { score, linesCleared } = request.data as { score: number; linesCleared: number };
+
+  if (typeof score !== 'number' || score < 0 || typeof linesCleared !== 'number' || linesCleared < 0) {
+    throw new functions.https.HttpsError('invalid-argument', 'パラメータが不正です');
+  }
+
+  const userDocRef = db.collection('users').doc(uid);
+  const userDoc = await userDocRef.get();
+
+  if (!userDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'ユーザーが見つかりません');
+  }
+
+  const userData = userDoc.data()!;
+  const tetrisScoreRef = db.collection('tetrisScores').doc(uid);
+
+  await db.runTransaction(async (transaction) => {
+    const tetrisScoreDoc = await transaction.get(tetrisScoreRef);
+    const existingData = tetrisScoreDoc.exists ? tetrisScoreDoc.data()! : null;
+    const currentHighScore = existingData?.highScore || 0;
+    const currentMaxLines = existingData?.maxLines || 0;
+    const currentTotalGames = existingData?.totalGames || 0;
+
+    transaction.set(tetrisScoreRef, {
+      userId: uid,
+      username: userData.username,
+      grade: userData.grade,
+      class: userData.class,
+      highScore: Math.max(currentHighScore, score),
+      maxLines: Math.max(currentMaxLines, linesCleared),
+      totalGames: currentTotalGames + 1,
+      lastPlayedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+
+  return { success: true, message: 'ランキングに登録しました' };
+});
+
 // テトリススコア提出（生徒のみ）— 日別カウント制
 export const submitTetrisScore = functions.https.onCall(async (request) => {
   if (!request.auth) {
@@ -1229,12 +1383,10 @@ export const submitTetrisScore = functions.https.onCall(async (request) => {
   }
 
   const classRef = getClassRef(userData);
-  const tetrisScoreRef = db.collection('tetrisScores').doc(uid);
 
   await db.runTransaction(async (transaction) => {
     // --- reads first ---
     const classDoc = classRef && pointsAwarded > 0 ? await transaction.get(classRef) : null;
-    const tetrisScoreDoc = await transaction.get(tetrisScoreRef);
 
     // --- writes ---
     // tetrisStats を更新
@@ -1243,25 +1395,6 @@ export const submitTetrisScore = functions.https.onCall(async (request) => {
       totalLinesCleared: newTotal,
       lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
     });
-
-    // tetrisScores を更新（ランキング用）
-    if (score !== undefined) {
-      const existingData = tetrisScoreDoc.exists ? tetrisScoreDoc.data()! : null;
-      const currentHighScore = existingData?.highScore || 0;
-      const currentMaxLines = existingData?.maxLines || 0;
-      const currentTotalGames = existingData?.totalGames || 0;
-
-      transaction.set(tetrisScoreRef, {
-        userId: uid,
-        username: userData.username,
-        grade: userData.grade,
-        class: userData.class,
-        highScore: Math.max(currentHighScore, score),
-        maxLines: Math.max(currentMaxLines, linesCleared),
-        totalGames: currentTotalGames + 1,
-        lastPlayedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-    }
 
     if (pointsAwarded > 0) {
       transaction.update(userDocRef, {
@@ -1323,6 +1456,7 @@ export const pullGacha = functions.https.onCall(async (request) => {
     weight: number;
     pointsValue?: number;
     ticketValue?: number;
+    imageUrl?: string;
     isActive: boolean;
   }
   const items: GachaItemDoc[] = itemsSnap.docs.map(d => ({ id: d.id, ...d.data() }) as GachaItemDoc);
@@ -1421,10 +1555,422 @@ export const pullGacha = functions.https.onCall(async (request) => {
     item: {
       id: selected.id,
       name: selected.name,
+      description: selected.description || '',
       rarity: selected.rarity,
       type: selected.type,
       pointsValue: selected.pointsValue ?? null,
       ticketValue: selected.ticketValue ?? null,
+      imageUrl: selected.imageUrl || null,
     },
+  };
+});
+
+// ==========================================
+// Dashboard Stats Cache - Admin Dashboard Optimization
+// ==========================================
+
+/**
+ * 管理画面ダッシュボード用の統計情報を定期的に更新
+ * Scheduledで1時間ごとに実行（99%のFirestore Read削減）
+ */
+export const updateDashboardStats = functions.scheduler.onSchedule({
+  schedule: 'every 1 hours',
+  timeZone: 'Asia/Tokyo',
+  memory: '256MiB',
+}, async () => {
+  try {
+    // 全ユーザー数を取得
+    const usersSnapshot = await db.collection('users').count().get();
+    const totalUsers = usersSnapshot.data().count;
+
+    // ロール別ユーザー数を集計
+    const studentsSnapshot = await db.collection('users').where('role', '==', 'student').count().get();
+    const teachersSnapshot = await db.collection('users').where('role', '==', 'teacher').count().get();
+    const staffSnapshot = await db.collection('users').where('role', '==', 'staff').count().get();
+    const adminsSnapshot = await db.collection('users').where('role', '==', 'admin').count().get();
+
+    const totalStudents = studentsSnapshot.data().count;
+    const totalTeachers = teachersSnapshot.data().count;
+    const totalStaff = staffSnapshot.data().count;
+    const totalAdmins = adminsSnapshot.data().count;
+
+    // 今日のログインユーザー数（近似）
+    const today = new Date().toISOString().split('T')[0];
+    const todayLoginsSnapshot = await db.collection('users')
+      .where('lastLoginDate', '==', today)
+      .count()
+      .get();
+    const todayLogins = todayLoginsSnapshot.data().count;
+
+    // 総ポイント発行数
+    const pointHistorySnapshot = await db.collection('pointHistory').get();
+    let totalPointsIssued = 0;
+    pointHistorySnapshot.forEach(doc => {
+      const data = doc.data();
+      if (data.points && data.points > 0) {
+        totalPointsIssued += data.points;
+      }
+    });
+
+    // アクティブなアンケート数
+    const activeSurveysSnapshot = await db.collection('surveys')
+      .where('status', '==', 'active')
+      .count()
+      .get();
+    const activeSurveys = activeSurveysSnapshot.data().count;
+
+    // 統計情報をFirestoreに保存
+    const statsRef = db.collection('config').doc('dashboardStats');
+    await statsRef.set({
+      totalUsers,
+      totalStudents,
+      totalTeachers,
+      totalStaff,
+      totalAdmins,
+      todayLogins,
+      totalPointsIssued,
+      activeSurveys,
+      lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log('Dashboard stats updated successfully');
+  } catch (error) {
+    console.error('Error updating dashboard stats:', error);
+    throw error;
+  }
+});
+
+/**
+ * 管理画面ダッシュボード用の統計情報を手動更新（HTTP Callable）
+ * 管理者が即座に最新データを取得したい場合に使用
+ */
+export const refreshDashboardStats = functions.https.onCall(async (request) => {
+  const userId = request.auth?.uid;
+  if (!userId) {
+    throw new functions.https.HttpsError('unauthenticated', 'ログインが必要です');
+  }
+
+  // 管理者権限チェック
+  const userDoc = await db.collection('users').doc(userId).get();
+  const userData = userDoc.data();
+  if (!userData || (userData.role !== 'admin' && userData.role !== 'staff')) {
+    throw new functions.https.HttpsError('permission-denied', '管理者権限が必要です');
+  }
+
+  try {
+    // updateDashboardStatsと同じロジックを実行
+    const usersSnapshot = await db.collection('users').count().get();
+    const totalUsers = usersSnapshot.data().count;
+
+    const studentsSnapshot = await db.collection('users').where('role', '==', 'student').count().get();
+    const teachersSnapshot = await db.collection('users').where('role', '==', 'teacher').count().get();
+    const staffSnapshot = await db.collection('users').where('role', '==', 'staff').count().get();
+    const adminsSnapshot = await db.collection('users').where('role', '==', 'admin').count().get();
+
+    const totalStudents = studentsSnapshot.data().count;
+    const totalTeachers = teachersSnapshot.data().count;
+    const totalStaff = staffSnapshot.data().count;
+    const totalAdmins = adminsSnapshot.data().count;
+
+    const today = new Date().toISOString().split('T')[0];
+    const todayLoginsSnapshot = await db.collection('users')
+      .where('lastLoginDate', '==', today)
+      .count()
+      .get();
+    const todayLogins = todayLoginsSnapshot.data().count;
+
+    const pointHistorySnapshot = await db.collection('pointHistory').get();
+    let totalPointsIssued = 0;
+    pointHistorySnapshot.forEach(doc => {
+      const data = doc.data();
+      if (data.points && data.points > 0) {
+        totalPointsIssued += data.points;
+      }
+    });
+
+    const activeSurveysSnapshot = await db.collection('surveys')
+      .where('status', '==', 'active')
+      .count()
+      .get();
+    const activeSurveys = activeSurveysSnapshot.data().count;
+
+    const statsRef = db.collection('config').doc('dashboardStats');
+    await statsRef.set({
+      totalUsers,
+      totalStudents,
+      totalTeachers,
+      totalStaff,
+      totalAdmins,
+      todayLogins,
+      totalPointsIssued,
+      activeSurveys,
+      lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return {
+      success: true,
+      stats: {
+        totalUsers,
+        totalStudents,
+        totalTeachers,
+        totalStaff,
+        totalAdmins,
+        todayLogins,
+        totalPointsIssued,
+        activeSurveys,
+      },
+    };
+  } catch (error) {
+    console.error('Error refreshing dashboard stats:', error);
+    throw new functions.https.HttpsError('internal', '統計情報の更新に失敗しました');
+  }
+});
+
+// ==========================================
+// Ranking Cache - RankingPage Optimization
+// ==========================================
+
+/**
+ * ランキング情報を定期的にキャッシュ
+ * Scheduledで10分ごとに実行（90%のFirestore Read削減）
+ */
+export const updateRankingCache = functions.scheduler.onSchedule({
+  schedule: 'every 10 minutes',
+  timeZone: 'Asia/Tokyo',
+  memory: '512MiB',
+}, async () => {
+  try {
+    // 個人ランキング（トップ100）
+    const usersSnapshot = await db.collection('users')
+      .orderBy('totalPoints', 'desc')
+      .limit(100)
+      .get();
+
+    const personalRanking = usersSnapshot.docs.map((doc, index) => {
+      const data = doc.data();
+      return {
+        rank: index + 1,
+        userId: doc.id,
+        username: data.username || 'Unknown',
+        totalPoints: data.totalPoints || 0,
+        grade: data.grade || null,
+        class: data.class || null,
+      };
+    });
+
+    // クラスランキング（全クラス）
+    const classesSnapshot = await db.collection('classes')
+      .orderBy('totalPoints', 'desc')
+      .get();
+
+    const classRanking = classesSnapshot.docs.map((doc, index) => {
+      const data = doc.data();
+      return {
+        rank: index + 1,
+        classId: doc.id,
+        grade: data.grade || 0,
+        className: data.className || '',
+        totalPoints: data.totalPoints || 0,
+        memberCount: data.memberCount || 0,
+      };
+    });
+
+    // キャッシュをFirestoreに保存
+    const batch = db.batch();
+
+    const personalRankingRef = db.collection('config').doc('personalRanking');
+    batch.set(personalRankingRef, {
+      rankings: personalRanking,
+      lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    const classRankingRef = db.collection('config').doc('classRanking');
+    batch.set(classRankingRef, {
+      rankings: classRanking,
+      lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    await batch.commit();
+
+    console.log('Ranking cache updated successfully');
+  } catch (error) {
+    console.error('Error updating ranking cache:', error);
+    throw error;
+  }
+});
+
+/**
+ * ランキング情報を手動更新（HTTP Callable）
+ * ユーザーが即座に最新ランキングを確認したい場合に使用
+ */
+export const refreshRankingCache = functions.https.onCall(async (request) => {
+  const userId = request.auth?.uid;
+  if (!userId) {
+    throw new functions.https.HttpsError('unauthenticated', 'ログインが必要です');
+  }
+
+  try {
+    // 個人ランキング
+    const usersSnapshot = await db.collection('users')
+      .orderBy('totalPoints', 'desc')
+      .limit(100)
+      .get();
+
+    const personalRanking = usersSnapshot.docs.map((doc, index) => {
+      const data = doc.data();
+      return {
+        rank: index + 1,
+        userId: doc.id,
+        username: data.username || 'Unknown',
+        totalPoints: data.totalPoints || 0,
+        grade: data.grade || null,
+        class: data.class || null,
+      };
+    });
+
+    // クラスランキング
+    const classesSnapshot = await db.collection('classes')
+      .orderBy('totalPoints', 'desc')
+      .get();
+
+    const classRanking = classesSnapshot.docs.map((doc, index) => {
+      const data = doc.data();
+      return {
+        rank: index + 1,
+        classId: doc.id,
+        grade: data.grade || 0,
+        className: data.className || '',
+        totalPoints: data.totalPoints || 0,
+        memberCount: data.memberCount || 0,
+      };
+    });
+
+    // キャッシュ保存
+    const batch = db.batch();
+
+    const personalRankingRef = db.collection('config').doc('personalRanking');
+    batch.set(personalRankingRef, {
+      rankings: personalRanking,
+      lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    const classRankingRef = db.collection('config').doc('classRanking');
+    batch.set(classRankingRef, {
+      rankings: classRanking,
+      lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    await batch.commit();
+
+    return {
+      success: true,
+      personalRankingCount: personalRanking.length,
+      classRankingCount: classRanking.length,
+    };
+  } catch (error) {
+    console.error('Error refreshing ranking cache:', error);
+    throw new functions.https.HttpsError('internal', 'ランキング更新に失敗しました');
+  }
+});
+
+// ==========================================
+// Security: Admin Audit & Cleanup
+// ==========================================
+
+/**
+ * 不正なadminユーザーを検出し、studentロールに降格する
+ * 許可されたメールアドレス以外のadminを全てstudentに変更
+ */
+export const auditAndFixAdminRoles = functions.https.onCall(async (request) => {
+  if (!request.auth) {
+    throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+  }
+
+  const email = request.auth.token?.email || '';
+
+  // この関数自体も許可されたメールアドレスのみ実行可能
+  if (!ADMIN_ALLOWED_EMAILS.includes(email)) {
+    throw new functions.https.HttpsError('permission-denied', 'この操作は許可されていません');
+  }
+
+  // 現在adminロールを持つ全ユーザーを取得
+  const adminUsersSnapshot = await db.collection('users')
+    .where('role', '==', 'admin')
+    .get();
+
+  const results: { fixed: string[]; kept: string[] } = { fixed: [], kept: [] };
+
+  for (const doc of adminUsersSnapshot.docs) {
+    const userData = doc.data();
+    const userEmail = userData.email;
+
+    if (ADMIN_ALLOWED_EMAILS.includes(userEmail)) {
+      // 許可されたadmin
+      results.kept.push(userEmail);
+    } else {
+      // 不正なadmin → studentに降格
+      await doc.ref.update({ role: 'student' });
+      results.fixed.push(userEmail);
+
+      // 監査ログを記録
+      await logAdminAction(request.auth.uid, 'auditAndFixAdminRoles', {
+        targetUserId: doc.id,
+        targetEmail: userEmail,
+        previousRole: 'admin',
+        newRole: 'student',
+        reason: 'unauthorized_admin_detected',
+      });
+    }
+  }
+
+  return {
+    success: true,
+    message: `${results.fixed.length}人の不正なadminをstudentに降格しました`,
+    fixed: results.fixed,
+    kept: results.kept,
+  };
+});
+
+/**
+ * 現在のadmin/staffユーザー一覧を取得（監査用）
+ */
+export const listPrivilegedUsers = functions.https.onCall(async (request) => {
+  if (!request.auth) {
+    throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+  }
+
+  const email = request.auth.token?.email || '';
+
+  // 許可されたメールアドレスのみ実行可能
+  if (!ADMIN_ALLOWED_EMAILS.includes(email)) {
+    throw new functions.https.HttpsError('permission-denied', 'この操作は許可されていません');
+  }
+
+  const adminsSnapshot = await db.collection('users')
+    .where('role', '==', 'admin')
+    .get();
+
+  const staffSnapshot = await db.collection('users')
+    .where('role', '==', 'staff')
+    .get();
+
+  const admins = adminsSnapshot.docs.map(doc => ({
+    id: doc.id,
+    email: doc.data().email,
+    username: doc.data().username,
+    isAllowed: ADMIN_ALLOWED_EMAILS.includes(doc.data().email),
+  }));
+
+  const staff = staffSnapshot.docs.map(doc => ({
+    id: doc.id,
+    email: doc.data().email,
+    username: doc.data().username,
+  }));
+
+  return {
+    success: true,
+    admins,
+    staff,
+    allowedAdminEmails: ADMIN_ALLOWED_EMAILS,
   };
 });

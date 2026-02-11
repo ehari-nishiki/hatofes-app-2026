@@ -37,14 +37,25 @@ service cloud.firestore {
 
     // Users collection
     match /users/{userId} {
+      // 許可されたフィールドのみ更新可能（roleは含まない - 権限昇格攻撃を防止）
+      function isAllowedUserUpdate() {
+        let allowedFields = ['realName', 'notificationsEnabled', 'theme', 'lastLoginDate'];
+        let changedFields = request.resource.data.diff(resource.data).affectedKeys();
+        return changedFields.hasOnly(allowedFields);
+      }
+
       // Anyone with valid domain can read any user (for leaderboards)
       allow read: if isSignedIn() && isValidDomain();
 
       // Users can only create their own document
       allow create: if isSignedIn() && isValidDomain() && request.auth.uid == userId;
 
-      // Users can update their own document; admin/staff can update any user
-      allow update: if isSignedIn() && isValidDomain() && (request.auth.uid == userId || isAdminOrStaff());
+      // ユーザー自身: 許可されたフィールドのみ更新可能
+      // 管理者のみ: 全フィールド更新可能（roleを含む）
+      allow update: if isSignedIn() && isValidDomain() && (
+        (request.auth.uid == userId && isAllowedUserUpdate()) ||
+        isAdmin()
+      );
 
       // Only admins can delete users
       allow delete: if isAdmin();
@@ -149,6 +160,42 @@ service cloud.firestore {
         request.resource.data.readBy.size() == resource.data.readBy.size() + 1 &&
         request.auth.uid in request.resource.data.readBy
       );
+    }
+
+    // Tetris scores collection (ランキング用)
+    match /tetrisScores/{scoreId} {
+      // Anyone authenticated can read (for leaderboards)
+      allow read: if isSignedIn() && isValidDomain();
+
+      // Write is denied from client — Cloud Functions only
+      allow write: if false;
+    }
+
+    // Tetris stats collection (日別統計)
+    match /tetrisStats/{userId} {
+      // Users can read their own stats; admin/staff can read all
+      allow read: if isSignedIn() && isValidDomain() && (userId == request.auth.uid || isAdminOrStaff());
+
+      // Write is denied from client — Cloud Functions only
+      allow write: if false;
+    }
+
+    // Auth errors collection
+    match /authErrors/{errorId} {
+      // Write is denied from client — Cloud Functions only
+      allow write: if false;
+
+      // Admin/staff can read all errors
+      allow read: if isAdminOrStaff();
+    }
+
+    // Admin logs collection (監査ログ)
+    match /adminLogs/{logId} {
+      // Write is denied from client — Cloud Functions only
+      allow write: if false;
+
+      // Only admins can read audit logs
+      allow read: if isAdmin();
     }
   }
 }

@@ -21,6 +21,8 @@ import ProfilePage from './pages/user/ProfilePage'
 import RankingPage from './pages/user/RankingPage'
 import SettingsPage from './pages/user/SettingsPage'
 import GachaPage from './pages/user/GachaPage'
+import TetrisPage from './pages/user/TetrisPage'
+import LevelPage from './pages/user/LevelPage'
 
 // Admin pages
 import AdminDashboard from './pages/admin/AdminDashboard'
@@ -29,13 +31,15 @@ import AdminSurveysPage from './pages/admin/AdminSurveysPage'
 import AdminNotificationsPage from './pages/admin/AdminNotificationsPage'
 import AdminUsersPage from './pages/admin/AdminUsersPage'
 import AdminGachaPage from './pages/admin/AdminGachaPage'
+import AuthErrorsPage from './pages/admin/AuthErrorsPage'
 
 // Route protection
 import { ProtectedRoute } from './components/auth/ProtectedRoute'
-import { AdminRoute } from './components/auth/AdminRoute'
+import { StaffRoute } from './components/auth/StaffRoute'
 
-// Dev tools
-import { AccountSwitcher } from './components/dev/AccountSwitcher'
+// Staff pages
+import StaffDashboard from './pages/admin/StaffDashboard'
+
 
 function App() {
   return (
@@ -65,18 +69,19 @@ function App() {
         <Route path="/ranking" element={<ProtectedRoute><RankingPage /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
         <Route path="/gacha" element={<ProtectedRoute><GachaPage /></ProtectedRoute>} />
+        <Route path="/tetris" element={<ProtectedRoute><TetrisPage /></ProtectedRoute>} />
+        <Route path="/level" element={<ProtectedRoute><LevelPage /></ProtectedRoute>} />
 
-        {/* Admin routes - Protected by AdminRoute */}
-        <Route path="/admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
-        <Route path="/admin/points" element={<AdminRoute><AdminPointsPage /></AdminRoute>} />
-        <Route path="/admin/surveys" element={<AdminRoute><AdminSurveysPage /></AdminRoute>} />
-        <Route path="/admin/notifications" element={<AdminRoute><AdminNotificationsPage /></AdminRoute>} />
-        <Route path="/admin/users" element={<AdminRoute><AdminUsersPage /></AdminRoute>} />
-        <Route path="/admin/gacha" element={<AdminRoute><AdminGachaPage /></AdminRoute>} />
+        {/* Admin routes - Protected by StaffRoute with different access levels */}
+        <Route path="/admin" element={<StaffRoute staffAllowed={false}><AdminDashboard /></StaffRoute>} />
+        <Route path="/admin/staff-dashboard" element={<StaffRoute staffAllowed={true}><StaffDashboard /></StaffRoute>} />
+        <Route path="/admin/points" element={<StaffRoute staffAllowed={false}><AdminPointsPage /></StaffRoute>} />
+        <Route path="/admin/surveys" element={<StaffRoute staffAllowed={true}><AdminSurveysPage /></StaffRoute>} />
+        <Route path="/admin/notifications" element={<StaffRoute staffAllowed={true}><AdminNotificationsPage /></StaffRoute>} />
+        <Route path="/admin/users" element={<StaffRoute staffAllowed={false}><AdminUsersPage /></StaffRoute>} />
+        <Route path="/admin/gacha" element={<StaffRoute staffAllowed={false}><AdminGachaPage /></StaffRoute>} />
+        <Route path="/admin/auth-errors" element={<StaffRoute staffAllowed={true}><AuthErrorsPage /></StaffRoute>} />
       </Routes>
-
-      {/* Dev tools - only visible in development mode */}
-      <AccountSwitcher />
     </>
   )
 }
