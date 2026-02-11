@@ -616,24 +616,32 @@ export const updateUserRole = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('invalid-argument', 'パラメータが不正です');
   }
 
-  // adminロールへの昇格は特定のメールアドレスのみ許可
-  if (role === 'admin') {
-    const targetUserDoc = await db.collection('users').doc(userId).get();
-    if (!targetUserDoc.exists) {
-      throw new functions.https.HttpsError('not-found', 'ユーザーが見つかりません');
-    }
-    const targetEmail = targetUserDoc.data()!.email;
-    if (!ADMIN_ALLOWED_EMAILS.includes(targetEmail)) {
-      throw new functions.https.HttpsError(
-        'permission-denied',
-        'このユーザーにadminロールを付与することはできません'
-      );
-    }
-  }
-
   // 変更前のロールを取得
   const targetUserDoc = await db.collection('users').doc(userId).get();
-  const previousRole = targetUserDoc.exists ? targetUserDoc.data()!.role : 'unknown';
+  if (!targetUserDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'ユーザーが見つかりません');
+  }
+
+  const targetEmail = targetUserDoc.data()!.email;
+  const previousRole = targetUserDoc.data()!.role;
+
+  // 保護されたadminアカウントのrole変更を完全に禁止
+  // （昇格も降格も不可）
+  if (ADMIN_ALLOWED_EMAILS.includes(targetEmail)) {
+    // 自分自身の変更も禁止（誤操作防止）
+    throw new functions.https.HttpsError(
+      'permission-denied',
+      'このアカウントのロールは変更できません（保護されたアカウント）'
+    );
+  }
+
+  // 一般ユーザーをadminに昇格させる場合もブロック
+  if (role === 'admin') {
+    throw new functions.https.HttpsError(
+      'permission-denied',
+      '新規にadminロールを付与することはできません'
+    );
+  }
 
   await db.collection('users').doc(userId).update({ role });
 
