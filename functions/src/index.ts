@@ -1982,3 +1982,92 @@ export const listPrivilegedUsers = functions.https.onCall(async (request) => {
     allowedAdminEmails: ADMIN_ALLOWED_EMAILS,
   };
 });
+
+// ==========================================
+// Notification Points
+// ==========================================
+
+/**
+ * 通知を開いた時にポイントを付与
+ */
+export const claimNotificationPoints = functions.https.onCall(async (request) => {
+  if (!request.auth) {
+    throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+  }
+
+  const email = request.auth.token?.email || '';
+  if (!isValidDomain(email)) {
+    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
+  }
+
+  const uid = request.auth.uid;
+  const { notificationId } = request.data as { notificationId: string };
+
+  if (!notificationId) {
+    throw new functions.https.HttpsError('invalid-argument', 'パラメータが不正です');
+  }
+
+  const notifRef = db.collection('notifications').doc(notificationId);
+  const userDocRef = db.collection('users').doc(uid);
+
+  await db.runTransaction(async (transaction) => {
+    // --- reads first ---
+    const notifDoc = await transaction.get(notifRef);
+    const userDoc = await transaction.get(userDocRef);
+
+    if (!notifDoc.exists) {
+      throw new functions.https.HttpsError('not-found', '通知が見つかりません');
+    }
+
+    if (!userDoc.exists) {
+      throw new functions.https.HttpsError('not-found', 'ユーザーが見つかりません');
+    }
+
+    const notifData = notifDoc.data()!;
+    const userData = userDoc.data()!;
+    const points = notifData.points || 0;
+
+    // ポイント付与がない場合
+    if (points <= 0) {
+      return;
+    }
+
+    // 既にポイントを受け取っている場合
+    const pointsReceivedBy = notifData.pointsReceivedBy || [];
+    if (pointsReceivedBy.includes(uid)) {
+      throw new functions.https.HttpsError('already-exists', '既にポイントを受け取っています');
+    }
+
+    const classRef = getClassRef(userData);
+    const classDoc = classRef ? await transaction.get(classRef) : null;
+
+    // --- writes ---
+    // ポイント履歴を記録
+    const historyRef = db.collection('pointHistory').doc();
+    transaction.set(historyRef, {
+      userId: uid,
+      points,
+      reason: 'admin_grant',
+      details: `通知「${notifData.title}」を確認`,
+      grantedBy: 'system',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // ユーザーのポイントを更新
+    transaction.update(userDocRef, {
+      totalPoints: admin.firestore.FieldValue.increment(points),
+    });
+
+    // クラスポイントを更新
+    if (classRef && classDoc) {
+      writeClassPoints(transaction, classRef, classDoc, userData as { grade: number; class: string }, points);
+    }
+
+    // 通知のpointsReceivedByを更新
+    transaction.update(notifRef, {
+      pointsReceivedBy: admin.firestore.FieldValue.arrayUnion(uid),
+    });
+  });
+
+  return { success: true, message: 'ポイントを獲得しました' };
+});

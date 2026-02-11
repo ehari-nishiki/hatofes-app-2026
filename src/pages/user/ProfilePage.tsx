@@ -1,10 +1,15 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { doc, updateDoc } from 'firebase/firestore'
 import AppHeader from '@/components/layout/AppHeader'
 import { useAuth } from '@/contexts/AuthContext'
-import { auth } from '@/lib/firebase'
+import { auth, db } from '@/lib/firebase'
 
 export default function ProfilePage() {
-  const { currentUser, userData } = useAuth()
+  const { currentUser, userData, refreshUserData } = useAuth()
+  const [editingRealName, setEditingRealName] = useState(false)
+  const [realName, setRealName] = useState('')
+  const [savingRealName, setSavingRealName] = useState(false)
 
   // Generate short user ID from Firebase UID
   const getUserId = () => {
@@ -20,6 +25,25 @@ export default function ProfilePage() {
       console.error('Error signing out:', error)
     }
   }
+
+  const handleSaveRealName = async () => {
+    if (!currentUser || !realName.trim()) return
+
+    setSavingRealName(true)
+    try {
+      await updateDoc(doc(db, 'users', currentUser.uid), {
+        realName: realName.trim(),
+      })
+      await refreshUserData?.()
+      setEditingRealName(false)
+    } catch (error) {
+      console.error('Error saving real name:', error)
+    } finally {
+      setSavingRealName(false)
+    }
+  }
+
+  const isStaffOrAdmin = userData?.role === 'staff' || userData?.role === 'admin'
 
   if (!userData) {
     return (
@@ -45,9 +69,11 @@ export default function ProfilePage() {
           </div>
           <h1 className="text-2xl font-bold text-hatofes-white mb-2">{userData.username}</h1>
           <p className="text-hatofes-gray-light">
-            {userData.role === 'teacher' || userData.role === 'staff'
-              ? userData.role === 'teacher' ? '教員' : '職員'
-              : `${userData.grade}年${userData.class}組 ${userData.studentNumber}番`}
+            {userData.role === 'teacher'
+              ? '教員'
+              : (userData.grade && userData.class)
+                ? `${userData.grade}年${userData.class}組 ${userData.studentNumber != null ? `${userData.studentNumber}番` : ''}`
+                : userData.role === 'staff' ? 'スタッフ' : ''}
           </p>
         </section>
 
@@ -88,10 +114,63 @@ export default function ProfilePage() {
               <p className="text-hatofes-gray-light text-sm mb-1">ユーザーネーム</p>
               <p className="text-hatofes-white">{userData.username}</p>
             </div>
+
+            {/* 本名 - staff/admin only */}
+            {isStaffOrAdmin && (
+              <div>
+                <p className="text-hatofes-gray-light text-sm mb-1">
+                  本名（通知・アンケート作成時に表示）
+                </p>
+                {editingRealName ? (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={realName}
+                      onChange={(e) => setRealName(e.target.value)}
+                      placeholder="本名を入力"
+                      className="flex-1 bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white text-sm"
+                    />
+                    <button
+                      onClick={handleSaveRealName}
+                      disabled={savingRealName || !realName.trim()}
+                      className="px-4 py-2 bg-hatofes-accent-yellow text-hatofes-dark rounded-lg text-sm font-bold disabled:opacity-50"
+                    >
+                      {savingRealName ? '...' : '保存'}
+                    </button>
+                    <button
+                      onClick={() => setEditingRealName(false)}
+                      className="px-3 py-2 text-hatofes-gray text-sm"
+                    >
+                      取消
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between">
+                    <p className="text-hatofes-white">
+                      {userData.realName || '（未設定）'}
+                    </p>
+                    <button
+                      onClick={() => {
+                        setRealName(userData.realName || '')
+                        setEditingRealName(true)
+                      }}
+                      className="text-xs text-hatofes-accent-yellow"
+                    >
+                      編集
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div>
               <p className="text-hatofes-gray-light text-sm mb-1">所属</p>
               <p className="text-hatofes-white">
-                {userData.role === 'teacher' ? '教員' : userData.role === 'staff' ? '職員' : `${userData.grade}年${userData.class}組`}
+                {userData.role === 'teacher'
+                  ? '教員'
+                  : (userData.grade && userData.class)
+                    ? `${userData.grade}年${userData.class}組`
+                    : userData.role === 'staff' ? 'スタッフ' : ''}
               </p>
             </div>
             <div>

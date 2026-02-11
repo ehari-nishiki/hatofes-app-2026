@@ -10,7 +10,9 @@ export interface User {
   class?: string; // A-H, optional for teachers/staff
   studentNumber?: number; // 名簿番号, optional for teachers/staff
   username: string;
+  realName?: string; // staff/admin用の本名（通知・アンケートで表示）
   role: UserRole;
+  department?: string; // 係（権限なし、表示のみ）例: 広報係、会計係など
   totalPoints: number;
   createdAt: Timestamp;
   lastLoginDate: string; // YYYY-MM-DD format
@@ -20,6 +22,8 @@ export interface User {
   usernameChangeCount?: number; // default: 0, max: 3
   // Gacha
   gachaTickets?: number; // default: 0
+  // Survey optimization
+  answeredSurveyIds?: string[]; // Array of survey IDs the user has answered (cached for performance)
 }
 
 // Feedback document
@@ -123,8 +127,12 @@ export interface Notification {
   targetUsers: string[]; // Empty array means all users
   targetRoles: UserRole[]; // Empty array means all roles
   createdAt: Timestamp;
+  createdBy?: string; // User ID of creator
+  senderName?: string; // Display name of sender (realName or username)
   readBy: string[]; // Array of user IDs who have read
   imageUrl?: string;
+  points?: number; // 通知を開いた時に付与するポイント（0または未設定 = 付与なし）
+  pointsReceivedBy?: string[]; // ポイントを受け取ったユーザーIDの配列
 }
 
 // Gacha item types

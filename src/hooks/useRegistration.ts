@@ -4,6 +4,7 @@ import { auth, db } from '../lib/firebase'
 import { RegistrationState, RegistrationStep, RegistrationData } from '@/types/auth'
 import { generateUsername } from '@/mocks/wordLists'
 import type { User } from '../types/firestore'
+import { logAuthError } from '../lib/authErrors'
 
 const initialState: RegistrationState = {
   step: 'grade',  // ログイン済みを前提とする
@@ -183,6 +184,7 @@ export function useRegistration() {
         username: username || '',
         role,
         totalPoints: 0,
+        gachaTickets: 10, // 新規登録ボーナス
         createdAt: Timestamp.now(),
         lastLoginDate,
       }
@@ -215,6 +217,11 @@ export function useRegistration() {
       goToStep('success')
     } catch (error) {
       console.error('Registration failed:', error)
+      const currentUser = auth.currentUser
+      await logAuthError('AUTH_009', error, {
+        email: currentUser?.email || undefined,
+        step: 'registration',
+      }, currentUser?.uid)
       setState(prev => ({
         ...prev,
         step: 'error',

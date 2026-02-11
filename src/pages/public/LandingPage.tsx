@@ -1,7 +1,22 @@
+import { useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Header from '@/components/layout/Header'
 import Footer from '@/components/layout/Footer'
+import { useAuth } from '@/contexts/AuthContext'
 
 export default function LandingPage() {
+  const navigate = useNavigate()
+  const { currentUser, userData, loading, userDataChecked } = useAuth()
+
+  // 既にログイン済みの場合はホームへリダイレクト
+  useEffect(() => {
+    if (loading || !userDataChecked) return
+
+    if (currentUser && userData) {
+      navigate('/home', { replace: true })
+    }
+  }, [currentUser, userData, loading, userDataChecked, navigate])
+
   return (
     <div className="min-h-screen flex flex-col bg-hatofes-bg">
       <Header />

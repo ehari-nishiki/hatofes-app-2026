@@ -1,8 +1,9 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User as FirebaseUser, onAuthStateChanged, signOut as firebaseSignOut } from 'firebase/auth';
-import { doc, getDoc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
 import type { User } from '../types/firestore';
+import { logAuthError } from '../lib/authErrors';
 
 interface AuthContextType {
   currentUser: FirebaseUser | null;
@@ -72,12 +73,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Listen to auth state changes
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      // リダイレクト処理中は待機
+      const isRedirectProcessing = sessionStorage.getItem('redirect_processing') === 'true'
+      if (isRedirectProcessing) {
+        console.log('[AuthContext] Redirect in progress, deferring auth state update')
+        return
+      }
+
       if (user && isValidDomain(user.email || '')) {
         // Reset userData loading states synchronously with setCurrentUser
         // so they are batched into the same render. Without this, ProtectedRoute
         // sees stale userDataChecked=true / userDataLoading=false from the
         // previous signed-out state and redirects to /register before the
-        // onSnapshot effect has a chance to run.
+        // fetch effect has a chance to run.
         setUserData(null);
         setUserDataLoading(true);
         setUserDataChecked(false);
@@ -85,6 +93,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } else if (user && !isValidDomain(user.email || '')) {
         // Invalid domain, sign out
         console.error('Invalid email domain');
+        await logAuthError('AUTH_001', new Error('Invalid email domain'), {
+          email: user.email || undefined,
+          step: 'auth',
+        }, user.uid);
         await firebaseSignOut(auth);
         setCurrentUser(null);
         setUserData(null);
@@ -102,7 +114,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return unsubscribe;
   }, []);
 
-  // Listen to user data changes in Firestore (real-time updates)
+  // Load user data from Firestore (one-time fetch, not real-time)
   useEffect(() => {
     // Wait for auth to finish loading first
     if (loading) {
@@ -120,27 +132,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUserDataLoading(true);
     setUserDataChecked(false);
 
-    const userDocRef = doc(db, 'users', currentUser.uid);
-    const unsubscribe = onSnapshot(
-      userDocRef,
-      (docSnap) => {
+    const fetchUserData = async () => {
+      try {
+        const userDocRef = doc(db, 'users', currentUser.uid);
+        const docSnap = await getDoc(userDocRef);
+
         if (docSnap.exists()) {
           setUserData(docSnap.data() as User);
         } else {
           setUserData(null);
+          await logAuthError('AUTH_003', new Error('User document does not exist'), {
+            email: currentUser.email || undefined,
+            step: 'firestore',
+          }, currentUser.uid);
         }
-        setUserDataLoading(false);
-        setUserDataChecked(true);
-      },
-      (error) => {
-        console.error('Error listening to user data:', error);
+      } catch (error) {
+        console.error('Error fetching user data:', error);
+        await logAuthError('AUTH_002', error, {
+          email: currentUser.email || undefined,
+          step: 'firestore',
+        }, currentUser.uid);
         setUserData(null);
+      } finally {
         setUserDataLoading(false);
         setUserDataChecked(true);
       }
-    );
+    };
 
-    return unsubscribe;
+    fetchUserData();
   }, [currentUser, loading]);
 
   const value: AuthContextType = {

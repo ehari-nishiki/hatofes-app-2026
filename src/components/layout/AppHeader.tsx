@@ -1,16 +1,23 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
+import { LevelBadge } from '@/components/ui/LevelBadge'
 
 interface AppHeaderProps {
   username?: string
   grade?: number | 'teacher'
   classNumber?: string
+  points?: number
+  department?: string
 }
 
-export default function AppHeader({ username = '勇敢な虹色の鳩', grade = 2, classNumber = 'A' }: AppHeaderProps) {
-  const { signOut } = useAuth()
+export default function AppHeader({ username = '勇敢な虹色の鳩', grade = 2, classNumber = 'A', points, department }: AppHeaderProps) {
+  const { signOut, userData } = useAuth()
   const navigate = useNavigate()
   const affiliation = grade === 'teacher' ? '教員' : `${grade}年${classNumber}組`
+
+  // propsが渡されていない場合はuserDataから取得
+  const displayPoints = points ?? userData?.totalPoints ?? 0
+  const displayDepartment = department ?? userData?.department
 
   const handleLogout = async () => {
     try {
@@ -34,8 +41,14 @@ export default function AppHeader({ username = '勇敢な虹色の鳩', grade = 
           {/* Account Info - Clickable */}
           <Link to="/profile" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
             <div className="text-right">
-              <p className="text-xs text-hatofes-white font-medium">{username}</p>
+              <div className="flex items-center justify-end gap-2 mb-0.5">
+                <p className="text-xs text-hatofes-white font-medium">{username}</p>
+                <LevelBadge points={displayPoints} size="sm" />
+              </div>
               <p className="text-xs text-hatofes-gray-light">{affiliation}</p>
+              {displayDepartment && (
+                <p className="text-xs text-hatofes-accent-yellow">{displayDepartment}</p>
+              )}
             </div>
             <div className="w-10 h-10 rounded-full bg-gradient-to-br from-hatofes-accent-yellow to-hatofes-accent-orange flex items-center justify-center text-white font-bold">
               {username.charAt(0)}

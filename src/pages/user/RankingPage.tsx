@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { collection, query, orderBy, limit, getDocs } from 'firebase/firestore'
+import { doc, getDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import AppHeader from '@/components/layout/AppHeader'
 import { useAuth } from '@/contexts/AuthContext'
@@ -34,69 +34,49 @@ export default function RankingPage() {
   useEffect(() => {
     const fetchRankings = async () => {
       try {
-        // Fetch individual ranking (top 50)
-        const usersQuery = query(
-          collection(db, 'users'),
-          orderBy('totalPoints', 'desc'),
-          limit(50)
-        )
-        const usersSnap = await getDocs(usersQuery)
-        const userList: RankedUser[] = []
-        let rank = 1
-        let prevPoints = -1
-        let actualRank = 0
+        // Use cached ranking data (90% read reduction)
+        const personalRankingDoc = await getDoc(doc(db, 'config', 'personalRanking'))
+        const classRankingDoc = await getDoc(doc(db, 'config', 'classRanking'))
 
-        usersSnap.forEach((docSnap) => {
-          const data = docSnap.data()
-          actualRank++
-          // Same points = same rank
-          if (data.totalPoints !== prevPoints) {
-            rank = actualRank
+        if (personalRankingDoc.exists()) {
+          const data = personalRankingDoc.data()
+          const cachedRankings = data.rankings || []
+
+          const userList: RankedUser[] = cachedRankings.map((item: any) => ({
+            id: item.userId,
+            username: item.username,
+            grade: item.grade,
+            class: item.class,
+            totalPoints: item.totalPoints,
+            rank: item.rank,
+          }))
+
+          setIndividualRanking(userList)
+
+          // Find current user's rank
+          if (currentUser) {
+            const userInRanking = cachedRankings.find((item: any) => item.userId === currentUser.uid)
+            if (userInRanking) {
+              setUserRank(userInRanking.rank)
+            }
           }
-          userList.push({
-            id: docSnap.id,
-            username: data.username,
-            grade: data.grade,
-            class: data.class,
-            totalPoints: data.totalPoints,
-            rank,
-          })
-          prevPoints = data.totalPoints
+        }
 
-          // Check if this is the current user
-          if (currentUser && docSnap.id === currentUser.uid) {
-            setUserRank(rank)
-          }
-        })
-        setIndividualRanking(userList)
+        if (classRankingDoc.exists()) {
+          const data = classRankingDoc.data()
+          const cachedClassRankings = data.rankings || []
 
-        // Use pre-calculated class totals from 'classes' collection
-        const classesQuery = query(collection(db, 'classes'), orderBy('totalPoints', 'desc'))
-        const classesSnap = await getDocs(classesQuery)
+          const classRankList: ClassRanking[] = cachedClassRankings.map((item: any) => ({
+            classId: item.classId,
+            grade: item.grade,
+            className: item.className,
+            totalPoints: item.totalPoints,
+            memberCount: item.memberCount,
+            rank: item.rank,
+          }))
 
-        const classRankList: ClassRanking[] = []
-        let classRank = 1
-        let prevClassPoints = -1
-        let actualClassRank = 0
-
-        classesSnap.forEach((docSnap) => {
-          const data = docSnap.data()
-          actualClassRank++
-          if (data.totalPoints !== prevClassPoints) {
-            classRank = actualClassRank
-          }
-          classRankList.push({
-            classId: docSnap.id,
-            grade: data.grade,
-            className: data.className,
-            totalPoints: data.totalPoints,
-            memberCount: data.memberCount || 0,
-            rank: classRank,
-          })
-          prevClassPoints = data.totalPoints
-        })
-
-        setClassRanking(classRankList)
+          setClassRanking(classRankList)
+        }
       } catch (error) {
         console.error('Error fetching rankings:', error)
       } finally {

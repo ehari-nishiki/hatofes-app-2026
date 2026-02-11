@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { collection, query, where, orderBy, getDocs, limit } from 'firebase/firestore'
+import { collection, query, where, orderBy, getDocs, limit, doc, getDoc } from 'firebase/firestore'
 import { getFunctions, httpsCallable } from 'firebase/functions'
 import { getAuth } from 'firebase/auth'
+import { animate, stagger } from 'animejs'
 import { db } from '@/lib/firebase'
 import app from '@/lib/firebase'
 import AppHeader from '@/components/layout/AppHeader'
@@ -10,7 +11,10 @@ import { useAuth } from '@/contexts/AuthContext'
 import { Spinner } from '@/components/ui/Spinner'
 import { PointRewardModal } from '@/components/ui/PointRewardModal'
 import { GachaConfetti } from '@/components/ui/GachaConfetti'
-import type { GachaHistoryEntry, GachaRarity } from '@/types/firestore'
+import { GachaRevealOverlay } from '@/components/ui/GachaRevealOverlay'
+import { GachaItemDetailModal } from '@/components/ui/GachaItemDetailModal'
+import { AnimatedButton } from '@/components/ui/AnimatedButton'
+import type { GachaHistoryEntry, GachaRarity, GachaItem } from '@/types/firestore'
 
 const functions = getFunctions(app)
 const pullGachaFn = httpsCallable<
@@ -20,20 +24,25 @@ const pullGachaFn = httpsCallable<
     item: {
       id: string
       name: string
+      description: string
       rarity: GachaRarity
       type: string
       pointsValue: number | null
       ticketValue: number | null
+      imageUrl?: string
     }
   }
 >(functions, 'pullGacha')
 
 type PullResult = {
+  id: string
   name: string
+  description: string
   rarity: GachaRarity
   type: string
   pointsValue: number | null
   ticketValue: number | null
+  imageUrl?: string
 }
 
 const RARITY_COLORS: Record<GachaRarity, string> = {
@@ -56,7 +65,7 @@ const RARITY_LABELS: Record<GachaRarity, string> = {
   common: 'コモン',
   uncommon: 'アンコモン',
   rare: 'レア',
-  epic: 'イピック',
+  epic: 'エピック',
   legendary: 'レジェンダリー',
 }
 
@@ -64,17 +73,31 @@ const RARITY_ORDER: Record<GachaRarity, number> = {
   common: 0, uncommon: 1, rare: 2, epic: 3, legendary: 4,
 }
 
+type HistoryItemWithDetails = GachaHistoryEntry & {
+  id: string
+  imageUrl?: string
+  description?: string
+  type?: string
+  pointsValue?: number
+  ticketValue?: number
+}
+
 export default function GachaPage() {
   const { userData, refreshUserData } = useAuth()
   const [pulling, setPulling] = useState(false)
-  const [revealing, setRevealing] = useState(false)
+  const [currentReveal, setCurrentReveal] = useState<PullResult | null>(null)
   const [results, setResults] = useState<PullResult[]>([])
-  const [history, setHistory] = useState<Array<GachaHistoryEntry & { id: string }>>([])
+  const [revealQueue, setRevealQueue] = useState<PullResult[]>([])
+  const [history, setHistory] = useState<HistoryItemWithDetails[]>([])
   const [historyLoading, setHistoryLoading] = useState(true)
   const [showRewardModal, setShowRewardModal] = useState(false)
   const [rewardAmount, setRewardAmount] = useState(0)
   const [rewardType, setRewardType] = useState<'points' | 'ticket'>('points')
   const [pullError, setPullError] = useState<string | null>(null)
+  const [selectedHistoryItem, setSelectedHistoryItem] = useState<HistoryItemWithDetails | null>(null)
+
+  const machineRef = useRef<HTMLDivElement>(null)
+  const ballsRef = useRef<HTMLDivElement>(null)
 
   const tickets = userData?.gachaTickets ?? 0
 
@@ -86,6 +109,29 @@ export default function GachaPage() {
     if (!userData) return
     fetchHistory()
   }, [userData])
+
+  // Animate machine on mount
+  useEffect(() => {
+    if (machineRef.current) {
+      animate(machineRef.current, {
+        scale: [0.9, 1],
+        opacity: [0, 1],
+        duration: 800,
+        ease: 'outBack',
+      })
+    }
+    // Floating balls animation
+    if (ballsRef.current) {
+      animate(ballsRef.current.children, {
+        translateY: [-5, 5],
+        duration: 1500,
+        delay: stagger(200),
+        alternate: true,
+        loop: true,
+        ease: 'inOutSine',
+      })
+    }
+  }, [])
 
   const fetchHistory = async () => {
     const authInstance = getAuth()
@@ -99,10 +145,32 @@ export default function GachaPage() {
         limit(20)
       )
       const snap = await getDocs(q)
-      const list: Array<GachaHistoryEntry & { id: string }> = []
-      snap.forEach(docSnap => {
-        list.push({ id: docSnap.id, ...docSnap.data() as GachaHistoryEntry })
-      })
+      const list: HistoryItemWithDetails[] = []
+
+      for (const docSnap of snap.docs) {
+        const data = docSnap.data() as GachaHistoryEntry
+        let itemDetails: Partial<GachaItem> = {}
+
+        // Fetch item details for image
+        try {
+          const itemDoc = await getDoc(doc(db, 'gachaItems', data.itemId))
+          if (itemDoc.exists()) {
+            itemDetails = itemDoc.data() as GachaItem
+          }
+        } catch {
+          // Ignore if item not found
+        }
+
+        list.push({
+          id: docSnap.id,
+          ...data,
+          imageUrl: itemDetails.imageUrl,
+          description: itemDetails.description,
+          type: itemDetails.type,
+          pointsValue: itemDetails.pointsValue,
+          ticketValue: itemDetails.ticketValue,
+        })
+      }
       setHistory(list)
     } catch (error) {
       console.error('Error fetching gacha history:', error)
@@ -112,12 +180,21 @@ export default function GachaPage() {
   }
 
   const handlePull = async (count: 1 | 10) => {
-    if (pulling || revealing || tickets < count) return
+    if (pulling || currentReveal || tickets < count) return
     setPulling(true)
     setResults([])
     setPullError(null)
 
-    const minDelay = count === 1 ? 1500 : 3000
+    // Shake animation
+    if (machineRef.current) {
+      animate(machineRef.current, {
+        rotate: [-2, 2, -2, 2, 0],
+        duration: 200,
+        loop: true,
+      })
+    }
+
+    const minDelay = count === 1 ? 1500 : 2500
     const collected: PullResult[] = []
 
     await Promise.all([
@@ -125,7 +202,10 @@ export default function GachaPage() {
         for (let i = 0; i < count; i++) {
           try {
             const res = await pullGachaFn({} as Record<string, never>)
-            collected.push(res.data.item)
+            collected.push({
+              ...res.data.item,
+              description: res.data.item.description || '',
+            })
           } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : 'ガチャの抽選に失敗しました'
             setPullError(msg)
@@ -136,26 +216,65 @@ export default function GachaPage() {
       new Promise(resolve => setTimeout(resolve, minDelay)),
     ])
 
+    // Stop shake animation
+    if (machineRef.current) {
+      // Reset rotation
+      machineRef.current.style.transform = ''
+      animate(machineRef.current, {
+        rotate: 0,
+        duration: 200,
+      })
+    }
+
     setPulling(false)
     if (collected.length === 0) return
 
     setResults(collected)
-    setRevealing(true)
-    setTimeout(() => {
-      setRevealing(false)
-      let totalPt = 0, totalTk = 0
-      for (const r of collected) {
-        if (r.type === 'points' && r.pointsValue) totalPt += r.pointsValue
-        if (r.type === 'ticket' && r.ticketValue) totalTk += r.ticketValue
+
+    if (count === 1) {
+      // Single pull - show dramatic reveal
+      setCurrentReveal(collected[0])
+    } else {
+      // 10 pull - queue reveals for best items, show list for rest
+      const sorted = [...collected].sort((a, b) => RARITY_ORDER[b.rarity] - RARITY_ORDER[a.rarity])
+      // Show reveal for epic+ items
+      const specialItems = sorted.filter(r => RARITY_ORDER[r.rarity] >= RARITY_ORDER['rare'])
+      if (specialItems.length > 0) {
+        setRevealQueue(specialItems)
+        setCurrentReveal(specialItems[0])
+      } else {
+        finishPull(collected)
       }
-      if (totalPt > 0) {
-        setRewardType('points'); setRewardAmount(totalPt); setShowRewardModal(true)
-      } else if (totalTk > 0) {
-        setRewardType('ticket'); setRewardAmount(totalTk); setShowRewardModal(true)
-      }
-      fetchHistory()
-      refreshUserData?.()
-    }, 800)
+    }
+  }
+
+  const handleRevealComplete = () => {
+    if (revealQueue.length > 1) {
+      // More items to reveal
+      const remaining = revealQueue.slice(1)
+      setRevealQueue(remaining)
+      setTimeout(() => setCurrentReveal(remaining[0]), 300)
+    } else {
+      // All reveals done
+      setRevealQueue([])
+      setCurrentReveal(null)
+      finishPull(results)
+    }
+  }
+
+  const finishPull = (collected: PullResult[]) => {
+    let totalPt = 0, totalTk = 0
+    for (const r of collected) {
+      if (r.type === 'points' && r.pointsValue) totalPt += r.pointsValue
+      if (r.type === 'ticket' && r.ticketValue) totalTk += r.ticketValue
+    }
+    if (totalPt > 0) {
+      setRewardType('points'); setRewardAmount(totalPt); setShowRewardModal(true)
+    } else if (totalTk > 0) {
+      setRewardType('ticket'); setRewardAmount(totalTk); setShowRewardModal(true)
+    }
+    fetchHistory()
+    refreshUserData?.()
   }
 
   if (!userData) {
@@ -166,11 +285,25 @@ export default function GachaPage() {
     )
   }
 
-  const busy = pulling || revealing
+  const busy = pulling || !!currentReveal
 
   return (
     <>
-      <GachaConfetti active={results.length > 0 && !revealing} rarity={bestRarity} />
+      <GachaConfetti active={results.length > 0 && !currentReveal} rarity={bestRarity} />
+
+      {currentReveal && (
+        <GachaRevealOverlay
+          active={true}
+          rarity={currentReveal.rarity}
+          itemName={currentReveal.name}
+          itemDescription={currentReveal.description}
+          itemImageUrl={currentReveal.imageUrl}
+          itemType={currentReveal.type}
+          pointsValue={currentReveal.pointsValue}
+          ticketValue={currentReveal.ticketValue}
+          onComplete={handleRevealComplete}
+        />
+      )}
 
       {showRewardModal && (
         <PointRewardModal
@@ -185,6 +318,23 @@ export default function GachaPage() {
         />
       )}
 
+      {selectedHistoryItem && (
+        <GachaItemDetailModal
+          isOpen={true}
+          onClose={() => setSelectedHistoryItem(null)}
+          item={{
+            name: selectedHistoryItem.itemName,
+            description: selectedHistoryItem.description,
+            rarity: selectedHistoryItem.itemRarity,
+            type: selectedHistoryItem.type || 'custom',
+            imageUrl: selectedHistoryItem.imageUrl,
+            pointsValue: selectedHistoryItem.pointsValue,
+            ticketValue: selectedHistoryItem.ticketValue,
+            pulledAt: selectedHistoryItem.pulledAt,
+          }}
+        />
+      )}
+
       <div className="min-h-screen bg-hatofes-bg pb-8">
         <AppHeader
           username={userData.username}
@@ -193,89 +343,109 @@ export default function GachaPage() {
         />
 
         <main className="max-w-lg mx-auto px-4 py-6 space-y-6">
-          {/* Ticket counter */}
-          <section className="card text-center">
-            <p className="text-hatofes-gray text-sm mb-1">チケット残数</p>
-            <p className="text-3xl font-bold text-hatofes-white font-display">
-              🎫 {tickets}<span className="text-lg text-hatofes-gray ml-1">枚</span>
-            </p>
+          {/* Ticket counter with animation */}
+          <section className="card text-center relative overflow-hidden">
+            <div className="absolute inset-0 bg-gradient-to-r from-hatofes-accent-yellow/5 via-transparent to-hatofes-accent-orange/5" />
+            <div className="relative">
+              <p className="text-hatofes-gray text-sm mb-1">チケット残数</p>
+              <p className="text-4xl font-bold text-hatofes-white font-display">
+                <span className="inline-block animate-bounce-subtle">🎫</span>{' '}
+                <span className="text-gradient">{tickets}</span>
+                <span className="text-lg text-hatofes-gray ml-1">枚</span>
+              </p>
+            </div>
           </section>
 
           {/* Error */}
           {pullError && (
-            <div className="bg-red-500/20 text-red-400 text-sm p-3 rounded-lg text-center">
+            <div className="bg-red-500/20 text-red-400 text-sm p-3 rounded-lg text-center border border-red-500/30">
               {pullError}
             </div>
           )}
 
-          {/* Gacha Machine */}
-          <section className="card text-center">
-            <div className={`mx-auto w-40 h-48 rounded-t-full border-4 border-hatofes-accent-yellow bg-hatofes-dark flex items-end justify-center pb-4 relative overflow-hidden ${pulling ? 'animate-gacha-shake' : ''}`}>
-              <div className={`flex gap-1 ${pulling ? 'animate-gacha-spin' : ''}`}>
-                {['bg-red-400', 'bg-blue-400', 'bg-green-400', 'bg-purple-400', 'bg-hatofes-accent-yellow'].map((color, i) => (
-                  <div key={i} className={`w-6 h-6 ${color} rounded-full opacity-80`} />
+          {/* Gacha Machine - Enhanced */}
+          <section className="card text-center relative overflow-hidden">
+            {/* Background gradient */}
+            <div className="absolute inset-0 bg-gradient-to-b from-transparent via-hatofes-accent-yellow/5 to-transparent" />
+
+            <div
+              ref={machineRef}
+              className={`relative mx-auto w-44 h-52 rounded-t-full border-4 border-hatofes-accent-yellow bg-gradient-to-b from-hatofes-dark to-hatofes-bg flex items-end justify-center pb-4 overflow-hidden opacity-0`}
+              style={{
+                boxShadow: '0 0 30px rgba(255,195,0,0.2), inset 0 -20px 40px rgba(0,0,0,0.5)',
+              }}
+            >
+              {/* Glow effect when pulling */}
+              {pulling && (
+                <div className="absolute inset-0 bg-gradient-to-t from-hatofes-accent-yellow/20 to-transparent animate-pulse" />
+              )}
+
+              {/* Balls inside */}
+              <div ref={ballsRef} className={`flex flex-wrap gap-1 justify-center p-2 ${pulling ? 'animate-bounce' : ''}`}>
+                {['bg-red-400', 'bg-blue-400', 'bg-green-400', 'bg-purple-400', 'bg-hatofes-accent-yellow', 'bg-pink-400', 'bg-cyan-400'].map((color, i) => (
+                  <div
+                    key={i}
+                    className={`w-6 h-6 ${color} rounded-full`}
+                    style={{
+                      boxShadow: `0 2px 4px rgba(0,0,0,0.3), inset 0 -2px 4px rgba(0,0,0,0.2), inset 0 2px 4px rgba(255,255,255,0.3)`,
+                    }}
+                  />
                 ))}
               </div>
 
-              {/* 1回の reveal カプセル */}
-              {revealing && results.length === 1 && (
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className={`w-16 h-16 rounded-full border-2 ${RARITY_BG[results[0].rarity]} animate-reveal flex items-center justify-center`}>
-                    <span className="text-2xl">🎁</span>
-                  </div>
-                </div>
-              )}
+              {/* Glass reflection */}
+              <div
+                className="absolute top-0 left-0 w-1/3 h-full opacity-20"
+                style={{
+                  background: 'linear-gradient(90deg, transparent, white, transparent)',
+                }}
+              />
             </div>
-            <div className="w-20 h-4 bg-hatofes-accent-orange rounded-b-lg mx-auto mb-4" />
 
-            {/* 1回 / 10回 ボタン */}
-            <div className="flex gap-2">
-              <button
+            {/* Dispenser */}
+            <div className="relative">
+              <div
+                className="w-24 h-5 bg-gradient-to-b from-hatofes-accent-orange to-hatofes-accent-yellow rounded-b-lg mx-auto"
+                style={{ boxShadow: '0 4px 10px rgba(255,78,0,0.3)' }}
+              />
+              <div className="w-8 h-3 bg-hatofes-dark rounded-b-lg mx-auto" />
+            </div>
+
+            {/* Pull buttons - 英語に変更 */}
+            <div className="flex gap-4 mt-6 relative">
+              <AnimatedButton
                 onClick={() => handlePull(1)}
                 disabled={busy || tickets < 1}
-                className="btn-main flex-1 py-3 disabled:opacity-50 text-lg font-bold"
+                loading={pulling}
+                variant="primary"
+                size="lg"
+                className="flex-1"
+                loadingText="..."
               >
-                {pulling ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <Spinner size="sm" /> 抽選中...
-                  </span>
-                ) : (
-                  tickets < 1 ? 'チケット不足' : '1回 引く'
-                )}
-              </button>
-              <button
+                {tickets < 1 ? 'No Ticket' : '1 Pull'}
+              </AnimatedButton>
+
+              <AnimatedButton
                 onClick={() => handlePull(10)}
                 disabled={busy || tickets < 10}
-                className="btn-main-10 flex-1 py-3 disabled:opacity-50 text-lg font-bold text-white"
+                loading={pulling}
+                variant="gradient"
+                size="lg"
+                className="flex-1"
               >
-                {pulling ? '...' : '10回 引く'}
-              </button>
+                10 Pull
+              </AnimatedButton>
             </div>
           </section>
 
-          {/* 1回の結果 */}
-          {results.length === 1 && !revealing && (
-            <section className={`card border-2 ${RARITY_BG[results[0].rarity]} text-center`}>
-              <p className={`text-xs font-bold uppercase tracking-widest mb-2 ${RARITY_COLORS[results[0].rarity]}`}>
-                {RARITY_LABELS[results[0].rarity]}
-              </p>
-              <h3 className="text-xl font-bold text-hatofes-white mb-2">{results[0].name}</h3>
-              {results[0].type === 'points' && results[0].pointsValue && (
-                <p className="text-hatofes-accent-yellow font-bold text-xl font-display">+{results[0].pointsValue}<span className="text-base ml-1">ポイント</span></p>
-              )}
-              {results[0].type === 'ticket' && results[0].ticketValue && (
-                <p className="text-hatofes-accent-yellow font-bold text-xl font-display">+{results[0].ticketValue}<span className="text-base ml-1">チケット</span></p>
-              )}
-              {(results[0].type === 'badge' || results[0].type === 'coupon' || results[0].type === 'custom') && (
-                <p className="text-hatofes-gray text-sm">{results[0].type}</p>
-              )}
-            </section>
-          )}
-
-          {/* 10回の結果リスト */}
-          {results.length > 1 && !revealing && (
+          {/* Results display - only for 10 pull list */}
+          {results.length > 1 && !currentReveal && !revealQueue.length && (
             <section className="card">
-              <h2 className="text-hatofes-white font-bold mb-3 text-center">10回の結果</h2>
+              <h2 className="text-hatofes-white font-bold mb-3 text-center flex items-center justify-center gap-2 font-display">
+                <span className="text-xl">🎊</span>
+                Result
+                <span className="text-xl">🎊</span>
+              </h2>
               <ul className="space-y-2">
                 {[...results]
                   .sort((a, b) => RARITY_ORDER[b.rarity] - RARITY_ORDER[a.rarity])
@@ -284,22 +454,52 @@ export default function GachaPage() {
                     return (
                       <li
                         key={i}
-                        className={`flex items-center justify-between p-2.5 rounded-lg ${
-                          isBest ? `border ${RARITY_BG[r.rarity]}` : 'bg-hatofes-dark'
+                        onClick={() => setSelectedHistoryItem({
+                          id: `result-${i}`,
+                          userId: '',
+                          itemId: r.id,
+                          itemName: r.name,
+                          itemRarity: r.rarity,
+                          pulledAt: { seconds: Date.now() / 1000, nanoseconds: 0 } as import('firebase/firestore').Timestamp,
+                          imageUrl: r.imageUrl,
+                          description: r.description,
+                          type: r.type,
+                          pointsValue: r.pointsValue ?? undefined,
+                          ticketValue: r.ticketValue ?? undefined,
+                        })}
+                        className={`flex items-center justify-between p-3 rounded-lg transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98] ${
+                          isBest ? `border ${RARITY_BG[r.rarity]}` : 'bg-hatofes-dark hover:bg-hatofes-dark/80'
                         }`}
+                        style={{
+                          animationDelay: `${i * 50}ms`,
+                        }}
                       >
-                        <div>
-                          <p className={`text-sm ${isBest ? 'font-bold' : ''} text-hatofes-white`}>{r.name}</p>
-                          <span className={`text-xs font-bold ${RARITY_COLORS[r.rarity]}`}>{RARITY_LABELS[r.rarity]}</span>
+                        <div className="flex items-center gap-3">
+                          {r.imageUrl ? (
+                            <img src={r.imageUrl} alt={r.name} className="w-10 h-10 rounded-lg object-cover" />
+                          ) : (
+                            <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-xl ${RARITY_BG[r.rarity].split(' ')[0]}`}>
+                              {r.type === 'points' ? '💰' : r.type === 'ticket' ? '🎫' : '🎁'}
+                            </div>
+                          )}
+                          <div>
+                            <p className={`text-sm ${isBest ? 'font-bold' : ''} text-hatofes-white`}>{r.name}</p>
+                            <span className={`text-xs font-bold ${RARITY_COLORS[r.rarity]}`}>{RARITY_LABELS[r.rarity]}</span>
+                          </div>
                         </div>
-                        <div className="text-right">
-                          {r.type === 'points' && r.pointsValue && (
-                            <span className="text-xs text-hatofes-accent-yellow font-bold font-display">+{r.pointsValue}pt</span>
-                          )}
-                          {r.type === 'ticket' && r.ticketValue && (
-                            <span className="text-xs text-hatofes-accent-yellow font-bold font-display">+{r.ticketValue}🎫</span>
-                          )}
-                          {isBest && <span className="block text-xs text-hatofes-accent-yellow">★ 最高レア</span>}
+                        <div className="flex items-center gap-2">
+                          <div className="text-right">
+                            {r.type === 'points' && r.pointsValue && (
+                              <span className="text-sm text-hatofes-accent-yellow font-bold font-display">+{r.pointsValue}pt</span>
+                            )}
+                            {r.type === 'ticket' && r.ticketValue && (
+                              <span className="text-sm text-hatofes-accent-yellow font-bold font-display">+{r.ticketValue}🎫</span>
+                            )}
+                            {isBest && <span className="block text-xs text-hatofes-accent-yellow mt-0.5">★ Best</span>}
+                          </div>
+                          <svg className="w-4 h-4 text-hatofes-gray" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                          </svg>
                         </div>
                       </li>
                     )
@@ -309,9 +509,11 @@ export default function GachaPage() {
             </section>
           )}
 
-          {/* History */}
+          {/* History - Clickable items */}
           <section className="card">
-            <h2 className="font-bold text-hatofes-white mb-4">引き歴</h2>
+            <h2 className="font-bold text-hatofes-white mb-4 flex items-center gap-2">
+              <span>📜</span> 引き歴
+            </h2>
             {historyLoading ? (
               <div className="flex justify-center py-4"><Spinner size="md" /></div>
             ) : history.length === 0 ? (
@@ -319,14 +521,32 @@ export default function GachaPage() {
             ) : (
               <ul className="space-y-2">
                 {history.map((entry) => (
-                  <li key={entry.id} className="flex items-center justify-between py-2 border-b border-hatofes-gray last:border-0">
-                    <div>
-                      <p className="text-sm text-hatofes-white">{entry.itemName}</p>
-                      <p className={`text-xs font-bold ${RARITY_COLORS[entry.itemRarity]}`}>{RARITY_LABELS[entry.itemRarity]}</p>
+                  <li
+                    key={entry.id}
+                    onClick={() => setSelectedHistoryItem(entry)}
+                    className="flex items-center justify-between py-2.5 px-3 -mx-1 rounded-lg cursor-pointer hover:bg-hatofes-dark/50 transition-all active:scale-[0.98]"
+                  >
+                    <div className="flex items-center gap-3">
+                      {entry.imageUrl ? (
+                        <img src={entry.imageUrl} alt={entry.itemName} className="w-10 h-10 rounded-lg object-cover" />
+                      ) : (
+                        <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-lg ${RARITY_BG[entry.itemRarity].split(' ')[0]}`}>
+                          {entry.type === 'points' ? '💰' : entry.type === 'ticket' ? '🎫' : '🎁'}
+                        </div>
+                      )}
+                      <div>
+                        <p className="text-sm text-hatofes-white">{entry.itemName}</p>
+                        <p className={`text-xs font-bold ${RARITY_COLORS[entry.itemRarity]}`}>{RARITY_LABELS[entry.itemRarity]}</p>
+                      </div>
                     </div>
-                    <p className="text-xs text-hatofes-gray">
-                      {entry.pulledAt?.seconds ? new Date(entry.pulledAt.seconds * 1000).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' }) : ''}
-                    </p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-xs text-hatofes-gray">
+                        {entry.pulledAt?.seconds ? new Date(entry.pulledAt.seconds * 1000).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' }) : ''}
+                      </p>
+                      <svg className="w-4 h-4 text-hatofes-gray" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -340,35 +560,19 @@ export default function GachaPage() {
       </div>
 
       <style>{`
-        @keyframes gacha-shake {
-          0%, 100% { transform: translateX(0); }
-          20% { transform: translateX(-4px); }
-          40% { transform: translateX(4px); }
-          60% { transform: translateX(-4px); }
-          80% { transform: translateX(4px); }
+        @keyframes bounce-subtle {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-3px); }
         }
-        .animate-gacha-shake { animation: gacha-shake 0.4s ease-in-out infinite; }
-        @keyframes gacha-spin-inner {
-          0% { transform: translateY(0); }
-          50% { transform: translateY(-8px); }
-          100% { transform: translateY(0); }
+        .animate-bounce-subtle {
+          animation: bounce-subtle 2s ease-in-out infinite;
         }
-        .animate-gacha-spin { animation: gacha-spin-inner 0.3s ease-in-out infinite; }
-        @keyframes reveal {
-          0% { transform: scale(0); opacity: 0; }
-          60% { transform: scale(1.2); }
-          100% { transform: scale(1); opacity: 1; }
+        .text-gradient {
+          background: linear-gradient(90deg, #FFC300, #FF4E00);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
         }
-        .animate-reveal { animation: reveal 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) forwards; }
-        .btn-main-10 {
-          background: linear-gradient(135deg, #FF4E00 0%, #FFC300 100%);
-          border-radius: 0.25rem;
-          font-weight: 700;
-          font-family: 'din-2014', sans-serif;
-          letter-spacing: 0.025em;
-          transition: all 0.2s;
-        }
-        .btn-main-10:hover { background: linear-gradient(135deg, #e64500 0%, #e6b000 100%); }
       `}</style>
     </>
   )

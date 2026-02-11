@@ -8,7 +8,6 @@ import {
   getDocs,
   startAfter,
   QueryDocumentSnapshot,
-  onSnapshot,
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import type { PointHistory } from '../types/firestore';
@@ -21,6 +20,7 @@ interface UsePointHistoryResult {
   error: string | null;
   hasMore: boolean;
   loadMore: () => Promise<void>;
+  refresh: () => void;
 }
 
 /**
@@ -34,8 +34,9 @@ export function usePointHistory(userId: string | null): UsePointHistoryResult {
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [lastDoc, setLastDoc] = useState<QueryDocumentSnapshot | null>(null);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
 
-  // Initial load with real-time listener
+  // Initial load (optimized - replaced onSnapshot with getDocs)
   useEffect(() => {
     if (!userId) {
       setHistory([]);
@@ -43,21 +44,20 @@ export function usePointHistory(userId: string | null): UsePointHistoryResult {
       return;
     }
 
-    setLoading(true);
-    setError(null);
+    const fetchHistory = async () => {
+      setLoading(true);
+      setError(null);
 
-    const pointHistoryRef = collection(db, 'pointHistory');
-    const q = query(
-      pointHistoryRef,
-      where('userId', '==', userId),
-      orderBy('createdAt', 'desc'),
-      limit(ITEMS_PER_PAGE)
-    );
+      try {
+        const pointHistoryRef = collection(db, 'pointHistory');
+        const q = query(
+          pointHistoryRef,
+          where('userId', '==', userId),
+          orderBy('createdAt', 'desc'),
+          limit(ITEMS_PER_PAGE)
+        );
 
-    // Set up real-time listener for initial page
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
+        const snapshot = await getDocs(q);
         const historyData: PointHistory[] = [];
         snapshot.forEach((doc) => {
           historyData.push({ id: doc.id, ...doc.data() } as PointHistory);
@@ -66,17 +66,16 @@ export function usePointHistory(userId: string | null): UsePointHistoryResult {
         setHistory(historyData);
         setHasMore(snapshot.docs.length === ITEMS_PER_PAGE);
         setLastDoc(snapshot.docs[snapshot.docs.length - 1] || null);
-        setLoading(false);
-      },
-      (err) => {
+      } catch (err) {
         console.error('Error fetching point history:', err);
         setError('ポイント履歴の取得に失敗しました');
+      } finally {
         setLoading(false);
       }
-    );
+    };
 
-    return () => unsubscribe();
-  }, [userId]);
+    fetchHistory();
+  }, [userId, refreshTrigger]);
 
   // Load more function (pagination)
   const loadMore = async () => {
@@ -107,11 +106,17 @@ export function usePointHistory(userId: string | null): UsePointHistoryResult {
     }
   };
 
+  // Refresh function to trigger re-fetch
+  const refresh = () => {
+    setRefreshTrigger((prev) => prev + 1);
+  };
+
   return {
     history,
     loading,
     error,
     hasMore,
     loadMore,
+    refresh,
   };
 }

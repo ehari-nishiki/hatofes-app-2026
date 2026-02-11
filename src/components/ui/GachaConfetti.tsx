@@ -1,12 +1,13 @@
 import { useRef, useEffect } from 'react'
 import type { GachaRarity } from '@/types/firestore'
+import { CONFETTI_COLORS } from '@/lib/animations'
 
 const PALETTES: Record<GachaRarity, string[]> = {
   common:     ['#9ca3af', '#d1d5db', '#f3f4f6'],
-  uncommon:   ['#4ade80', '#86efac', '#22c55e', '#bbf7d0'],
-  rare:       ['#60a5fa', '#93c5fd', '#3b82f6', '#bfdbfe'],
-  epic:       ['#c084fc', '#a855f7', '#e9d5ff', '#FFC300'],
-  legendary:  ['#FFC300', '#FF4E00', '#FFD700', '#ffffff', '#ff6347'],
+  uncommon:   CONFETTI_COLORS.green,
+  rare:       CONFETTI_COLORS.blue,
+  epic:       [...CONFETTI_COLORS.purple, '#FFC300'],
+  legendary:  [...CONFETTI_COLORS.gold, '#ffffff'],
 }
 
 const SPAWN_PER_FRAME: Record<GachaRarity, number> = {
@@ -154,7 +155,7 @@ export function GachaConfetti({ active, rarity }: GachaConfettiProps) {
     <canvas
       ref={canvasRef}
       className="fixed inset-0 pointer-events-none"
-      style={{ zIndex: 40 }}
+      style={{ zIndex: 60 }}
     />
   )
 }

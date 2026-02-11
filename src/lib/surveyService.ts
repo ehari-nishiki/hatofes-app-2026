@@ -34,7 +34,7 @@ export async function checkAlreadyAnswered(
   return !querySnapshot.empty;
 }
 
-// Get surveys by category with user's answered status
+// Get surveys by category with user's answered status (optimized)
 export async function getSurveysByCategory(
   category: SurveyCategory,
   userId: string
@@ -49,15 +49,10 @@ export async function getSurveysByCategory(
 
   const surveysSnapshot = await getDocs(surveysQuery);
 
-  // Get user's responses
-  const responsesQuery = query(
-    collection(db, 'surveyResponses'),
-    where('userId', '==', userId)
-  );
-  const responsesSnapshot = await getDocs(responsesQuery);
-  const answeredSurveyIds = new Set(
-    responsesSnapshot.docs.map((doc) => doc.data().surveyId)
-  );
+  // Get answered survey IDs from user document (optimized)
+  const userDoc = await getDoc(doc(db, 'users', userId));
+  const userData = userDoc.data();
+  const answeredSurveyIds = new Set(userData?.answeredSurveyIds || []);
 
   const surveys: Array<Survey & { id: string; isAnswered: boolean }> = [];
 
@@ -105,7 +100,7 @@ export async function submitSurveyResponse(
   }
 }
 
-// Get all surveys (for listing, including closed ones)
+// Get all surveys (for listing, including closed ones) - optimized
 export async function getAllSurveysForUser(
   userId: string
 ): Promise<Array<Survey & { id: string; isAnswered: boolean }>> {
@@ -116,15 +111,10 @@ export async function getAllSurveysForUser(
 
   const surveysSnapshot = await getDocs(surveysQuery);
 
-  // Get user's responses
-  const responsesQuery = query(
-    collection(db, 'surveyResponses'),
-    where('userId', '==', userId)
-  );
-  const responsesSnapshot = await getDocs(responsesQuery);
-  const answeredSurveyIds = new Set(
-    responsesSnapshot.docs.map((doc) => doc.data().surveyId)
-  );
+  // Get answered survey IDs from user document (optimized)
+  const userDoc = await getDoc(doc(db, 'users', userId));
+  const userData = userDoc.data();
+  const answeredSurveyIds = new Set(userData?.answeredSurveyIds || []);
 
   const surveys: Array<Survey & { id: string; isAnswered: boolean }> = [];
 

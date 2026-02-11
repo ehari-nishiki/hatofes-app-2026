@@ -30,7 +30,10 @@ export default {
           'sans-serif',
         ],
         display: [
-          'din-2014',
+          {
+            family: 'din-2014',
+            fontWeight: '700'
+          },
           'sans-serif',
         ],
       },

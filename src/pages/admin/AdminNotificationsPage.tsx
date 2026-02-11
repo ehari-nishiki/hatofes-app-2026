@@ -14,7 +14,7 @@ interface Notification {
 }
 
 export default function AdminNotificationsPage() {
-  const { currentUser } = useAuth()
+  const { currentUser, userData } = useAuth()
   const [notifications, setNotifications] = useState<Notification[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
@@ -22,6 +22,7 @@ export default function AdminNotificationsPage() {
     title: '',
     message: '',
     imageUrl: '',
+    points: 0,
     targetRoles: ['student', 'teacher', 'staff', 'admin'] as string[],
   })
   const [submitting, setSubmitting] = useState(false)
@@ -53,21 +54,32 @@ export default function AdminNotificationsPage() {
     setSubmitting(true)
     try {
       const notifId = `notif-${Date.now()}`
+      const senderName = userData?.realName || userData?.username || '運営'
       await setDoc(doc(db, 'notifications', notifId), {
         title: newNotification.title,
         message: newNotification.message,
         ...(newNotification.imageUrl ? { imageUrl: newNotification.imageUrl } : {}),
+        ...(newNotification.points > 0 ? { points: newNotification.points, pointsReceivedBy: [] } : {}),
         targetRoles: newNotification.targetRoles,
         targetUsers: [],
         createdBy: currentUser?.uid,
+        senderName,
         createdAt: Timestamp.now(),
         readBy: [],
       })
 
       setMessage({ type: 'success', text: '通知を送信しました' })
+      // Add to local state instead of refetching
+      const createdNotif: Notification = {
+        id: notifId,
+        title: newNotification.title,
+        message: newNotification.message,
+        targetRoles: newNotification.targetRoles,
+        createdAt: Timestamp.now(),
+      }
+      setNotifications(prev => [createdNotif, ...prev])
       setShowCreate(false)
-      setNewNotification({ title: '', message: '', imageUrl: '', targetRoles: ['student', 'teacher', 'staff', 'admin'] })
-      fetchNotifications()
+      setNewNotification({ title: '', message: '', imageUrl: '', points: 0, targetRoles: ['student', 'teacher', 'staff', 'admin'] })
     } catch (error) {
       console.error('Error creating notification:', error)
       setMessage({ type: 'error', text: '通知送信に失敗しました' })
@@ -81,7 +93,8 @@ export default function AdminNotificationsPage() {
 
     try {
       await deleteDoc(doc(db, 'notifications', notifId))
-      fetchNotifications()
+      // Remove from local state instead of refetching
+      setNotifications(prev => prev.filter(n => n.id !== notifId))
     } catch (error) {
       console.error('Error deleting notification:', error)
     }
@@ -163,6 +176,23 @@ export default function AdminNotificationsPage() {
                   onChange={url => setNewNotification(prev => ({ ...prev, imageUrl: url }))}
                   label="添付画像"
                 />
+
+                <div>
+                  <label className="block text-sm text-hatofes-gray mb-1">
+                    付与ポイント（任意）
+                  </label>
+                  <input
+                    type="number"
+                    value={newNotification.points}
+                    onChange={e => setNewNotification(prev => ({ ...prev, points: parseInt(e.target.value) || 0 }))}
+                    min={0}
+                    className="w-32 bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white"
+                    placeholder="0"
+                  />
+                  <p className="text-xs text-hatofes-gray mt-1">
+                    通知を開いた時に付与されるポイント（0 = 付与なし）
+                  </p>
+                </div>
 
                 <div>
                   <label className="block text-sm text-hatofes-gray mb-2">送信対象</label>

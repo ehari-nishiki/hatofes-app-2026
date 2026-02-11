@@ -1,16 +1,17 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { collection, query, where, getCountFromServer } from 'firebase/firestore'
+import { collection, query, where, getCountFromServer, doc, getDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import AppHeader from '@/components/layout/AppHeader'
 import { useAuth } from '@/contexts/AuthContext'
 import { usePointHistory } from '@/hooks/usePointHistory'
 import { useClassPoints } from '@/hooks/useClassPoints'
 import { generateClassId } from '@/lib/classUtils'
+import { AnimatedNumber } from '@/components/ui/PageLoader'
 
 export default function PointPage() {
   const { currentUser, userData } = useAuth()
-  const { history, loading: historyLoading, hasMore, loadMore } = usePointHistory(currentUser?.uid || null)
+  const { history, loading: historyLoading, hasMore, loadMore, refresh } = usePointHistory(currentUser?.uid || null)
 
   // Get class ID and fetch class data
   const classId = userData?.grade && userData?.class
@@ -21,10 +22,25 @@ export default function PointPage() {
   const [personalRank, setPersonalRank] = useState<number | null>(null)
   const [totalUsers, setTotalUsers] = useState<number | null>(null)
 
+  // Fetch rank using cache (optimized)
   useEffect(() => {
     if (!currentUser || !userData) return
     const fetchRank = async () => {
       try {
+        // Try to get ranking from cache first
+        const rankingCacheDoc = await getDoc(doc(db, 'config', 'personalRanking'))
+
+        if (rankingCacheDoc.exists()) {
+          const cachedRankings = rankingCacheDoc.data().rankings || []
+          const rank = cachedRankings.findIndex((r: any) => r.userId === currentUser.uid) + 1
+          if (rank > 0) {
+            setPersonalRank(rank)
+            setTotalUsers(cachedRankings.length)
+            return
+          }
+        }
+
+        // Fallback: calculate rank directly if cache miss
         const higherSnap = await getCountFromServer(
           query(collection(db, 'users'), where('totalPoints', '>', userData.totalPoints))
         )
@@ -36,7 +52,14 @@ export default function PointPage() {
       }
     }
     fetchRank()
-  }, [currentUser, userData?.totalPoints])
+  }, [currentUser, userData])
+
+  // Refresh point history when total points change
+  useEffect(() => {
+    if (userData?.totalPoints !== undefined) {
+      refresh()
+    }
+  }, [userData?.totalPoints, refresh])
 
   if (!userData) {
     return (
@@ -57,20 +80,30 @@ export default function PointPage() {
       <main className="max-w-lg mx-auto px-4 py-6 space-y-6">
         {/* Personal Points */}
         <section className="card">
-          <div className="flex justify-between items-start mb-2">
-            <p className="text-sm text-hatofes-white">現在の鳩ポイント</p>
-          </div>
+          <p className="text-lg text-hatofes-white text-center mb-3 font-bold">現在の鳩ポイント</p>
 
-          <div className="border border-hatofes-gray rounded-lg p-4 mb-2 bg-hatofes-dark">
+          <div
+            className="rounded-lg p-4 mb-2"
+            style={{
+              background: 'linear-gradient(135deg, rgba(255,195,0,0.15), rgba(255,78,0,0.15))',
+              border: '2px solid transparent',
+              backgroundImage: 'linear-gradient(#0d0d0d, #0d0d0d), linear-gradient(135deg, #FFC300, #FF4E00)',
+              backgroundOrigin: 'border-box',
+              backgroundClip: 'padding-box, border-box',
+            }}
+          >
             <div className="flex items-baseline justify-center">
               <span className="font-display text-5xl font-bold text-gradient">
-                {userData.totalPoints.toLocaleString()}
+                <AnimatedNumber value={userData.totalPoints} duration={1200} />
               </span>
-              <span className="text-xl ml-1 text-hatofes-gray-light">pt</span>
+              <span className="text-xl ml-1 text-hatofes-gray-light font-display">pt</span>
             </div>
           </div>
 
-          <p className="text-xs text-hatofes-gray text-right">リアルタイム同期中</p>
+          <p className="text-xs text-hatofes-gray text-right flex items-center justify-end gap-1">
+            <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+            リアルタイム同期中
+          </p>
         </section>
 
         {/* Class Points */}
@@ -89,7 +122,7 @@ export default function PointPage() {
                     <span className="font-display text-4xl font-bold text-hatofes-white">
                       {classData.totalPoints.toLocaleString()}
                     </span>
-                    <span className="text-lg ml-1 text-hatofes-gray-light">pt</span>
+                    <span className="text-lg ml-1 text-hatofes-gray-light font-display">pt</span>
                   </>
                 )}
               </div>
@@ -136,17 +169,26 @@ export default function PointPage() {
             <p className="text-sm text-hatofes-gray text-center py-4">まだポイント履歴がありません</p>
           ) : (
             <>
-              <ul className="divide-y divide-hatofes-gray">
+              <ul className="space-y-2">
                 {history.map((item) => (
-                  <li key={item.id} className="py-3 flex items-center justify-between">
+                  <li key={item.id} className="py-3 px-3 flex items-center justify-between rounded-lg bg-hatofes-dark">
                     <div>
-                      <p className="text-hatofes-white text-sm">{getReasonLabel(item.reason)}</p>
-                      <p className="text-hatofes-gray text-xs">{formatDate(item.createdAt)}</p>
+                      <p className="text-hatofes-white text-sm font-medium">{getReasonLabel(item.reason)}</p>
+                      <p className="text-hatofes-gray text-xs font-display">{formatDate(item.createdAt)}</p>
                       {item.details && (
                         <p className="text-hatofes-gray text-xs mt-1">{item.details}</p>
                       )}
                     </div>
-                    <span className="point-badge">+{item.points}pt</span>
+                    <span
+                      className="px-3 py-1 rounded-full text-sm font-bold font-display text-white"
+                      style={{
+                        background: item.points >= 0
+                          ? 'linear-gradient(90deg, #FFC300, #FF4E00)'
+                          : 'linear-gradient(90deg, #ef4444, #dc2626)',
+                      }}
+                    >
+                      {item.points >= 0 ? '+' : ''}{item.points}pt
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -154,10 +196,12 @@ export default function PointPage() {
               {hasMore && (
                 <button
                   onClick={loadMore}
-                  className="mt-4 w-full bg-hatofes-dark rounded py-2 px-4 text-center text-sm flex items-center justify-center gap-2 text-hatofes-white hover:text-hatofes-accent-yellow transition-colors"
+                  className="mt-4 w-full rounded-lg py-2.5 px-4 text-center text-sm flex items-center justify-center gap-2 text-hatofes-white border border-hatofes-gray hover:border-hatofes-accent-yellow hover:text-hatofes-accent-yellow transition-colors"
                 >
                   <span>もっと見る</span>
-                  <span>››</span>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
                 </button>
               )}
             </>

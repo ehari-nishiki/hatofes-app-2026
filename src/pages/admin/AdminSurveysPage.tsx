@@ -1,19 +1,25 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { collection, getDocs, getDoc, doc, setDoc, updateDoc, deleteDoc, Timestamp, query, orderBy, where } from 'firebase/firestore'
+import { collection, getDocs, getDoc, doc, setDoc, updateDoc, deleteDoc, Timestamp, query, orderBy, where, getCountFromServer } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { useAuth } from '@/contexts/AuthContext'
 import { Spinner } from '@/components/ui/Spinner'
 import { ImageUploader } from '@/components/ui/ImageUploader'
+import { exportSurveyResponsesToCSV } from '@/lib/csvUtils'
+
+// Cache for user data to avoid repeated fetches
+const userCache = new Map<string, { username: string; grade?: number; class?: string; studentNumber?: number }>()
 
 interface Survey {
   id: string
   title: string
   description: string
   points: number
-  status: 'active' | 'closed'
+  status: 'pending' | 'active' | 'closed'
   category?: 'task' | 'mission'
   createdAt: Timestamp
+  createdBy?: string
+  createdByName?: string
   responseCount?: number
 }
 
@@ -32,7 +38,7 @@ interface NewSurvey {
 }
 
 export default function AdminSurveysPage() {
-  const { currentUser } = useAuth()
+  const { currentUser, userData } = useAuth()
   const [surveys, setSurveys] = useState<Survey[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
@@ -52,7 +58,16 @@ export default function AdminSurveysPage() {
 
   // Response viewing modal
   const [viewingSurvey, setViewingSurvey] = useState<Survey | null>(null)
-  const [responses, setResponses] = useState<Array<{ id: string; userId: string; username: string; answers: unknown[] }>>([])
+  const [responses, setResponses] = useState<Array<{
+    id: string
+    userId: string
+    username: string
+    grade?: number
+    class?: string
+    studentNumber?: number
+    answers: Record<string, string | number>
+    submittedAt: { seconds: number }
+  }>>([])
   const [responsesLoading, setResponsesLoading] = useState(false)
   const [surveyQuestions, setSurveyQuestions] = useState<Array<{ id: string; question: string; type: string }>>([])
 
@@ -71,22 +86,72 @@ export default function AdminSurveysPage() {
         query(collection(db, 'surveyResponses'), where('surveyId', '==', survey.id))
       )
 
-      // Fetch usernames
-      const responseList: Array<{ id: string; userId: string; username: string; answers: unknown[] }> = []
+      // Collect unique user IDs that aren't cached
+      const uncachedUserIds = new Set<string>()
+      responsesSnap.docs.forEach(respDoc => {
+        const userId = respDoc.data().userId
+        if (!userCache.has(userId)) {
+          uncachedUserIds.add(userId)
+        }
+      })
+
+      // Batch fetch uncached users (fetch all at once instead of N+1)
+      if (uncachedUserIds.size > 0) {
+        const userIds = Array.from(uncachedUserIds)
+        // Firestore doesn't support IN queries with more than 30 items, so batch them
+        const batchSize = 30
+        for (let i = 0; i < userIds.length; i += batchSize) {
+          const batch = userIds.slice(i, i + batchSize)
+          const usersSnap = await getDocs(
+            query(collection(db, 'users'), where('__name__', 'in', batch))
+          )
+          usersSnap.forEach(userDoc => {
+            const userData = userDoc.data()
+            userCache.set(userDoc.id, {
+              username: userData.username,
+              grade: userData.grade,
+              class: userData.class,
+              studentNumber: userData.studentNumber,
+            })
+          })
+        }
+      }
+
+      // Build response list using cache
+      const responseList: Array<{
+        id: string
+        userId: string
+        username: string
+        grade?: number
+        class?: string
+        studentNumber?: number
+        answers: Record<string, string | number>
+        submittedAt: { seconds: number }
+      }> = []
+
       for (const respDoc of responsesSnap.docs) {
         const data = respDoc.data()
-        let username = data.userId
-        try {
-          const userSnap = await getDoc(doc(db, 'users', data.userId))
-          if (userSnap.exists()) {
-            username = userSnap.data().username
+        const cached = userCache.get(data.userId)
+
+        // Convert answers array to Record format for CSV export
+        const answersRecord: Record<string, string | number> = {}
+        if (Array.isArray(data.answers)) {
+          for (const ans of data.answers) {
+            if (typeof ans === 'object' && ans !== null && 'questionId' in ans && 'value' in ans) {
+              answersRecord[ans.questionId] = ans.value
+            }
           }
-        } catch { /* fallback to userId */ }
+        }
+
         responseList.push({
           id: respDoc.id,
           userId: data.userId,
-          username,
-          answers: data.answers,
+          username: cached?.username || data.userId,
+          grade: cached?.grade,
+          class: cached?.class,
+          studentNumber: cached?.studentNumber,
+          answers: answersRecord,
+          submittedAt: data.submittedAt || { seconds: 0 },
         })
       }
       setResponses(responseList)
@@ -117,17 +182,19 @@ export default function AdminSurveysPage() {
     try {
       const q = query(collection(db, 'surveys'), orderBy('createdAt', 'desc'))
       const snap = await getDocs(q)
-      const list: Survey[] = []
 
-      for (const docSnap of snap.docs) {
-        const data = docSnap.data()
-        // Get response count for this survey
-        const responsesSnap = await getDocs(
+      // Fetch all response counts in parallel instead of sequential N+1 queries
+      const countPromises = snap.docs.map(docSnap =>
+        getCountFromServer(
           query(collection(db, 'surveyResponses'), where('surveyId', '==', docSnap.id))
-        )
-        const responseCount = responsesSnap.size
+        ).then(countSnap => ({ id: docSnap.id, count: countSnap.data().count }))
+      )
+      const counts = await Promise.all(countPromises)
+      const countMap = new Map(counts.map(c => [c.id, c.count]))
 
-        list.push({
+      const list: Survey[] = snap.docs.map(docSnap => {
+        const data = docSnap.data()
+        return {
           id: docSnap.id,
           title: data.title,
           description: data.description,
@@ -135,9 +202,10 @@ export default function AdminSurveysPage() {
           status: data.status,
           category: data.category,
           createdAt: data.createdAt,
-          responseCount,
-        })
-      }
+          responseCount: countMap.get(docSnap.id) || 0,
+        }
+      })
+
       setSurveys(list)
     } catch (error) {
       console.error('Error fetching surveys:', error)
@@ -152,20 +220,28 @@ export default function AdminSurveysPage() {
     setSubmitting(true)
     try {
       const surveyId = `survey-${Date.now()}`
+      // スタッフが作成した場合はpending、adminが作成した場合はactive
+      const initialStatus = userData?.role === 'admin' ? 'active' : 'pending'
+
       await setDoc(doc(db, 'surveys', surveyId), {
         title: newSurvey.title,
         description: newSurvey.description,
         points: newSurvey.points,
         category: newSurvey.category,
         questions: newSurvey.questions.map((q, i) => ({ ...q, id: `q-${i}` })),
-        status: 'active',
+        status: initialStatus,
         startDate: Timestamp.now(),
         endDate: Timestamp.fromDate(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)),
         createdBy: currentUser?.uid,
+        createdByName: userData?.username || userData?.realName || '不明',
         createdAt: Timestamp.now(),
       })
 
-      setMessage({ type: 'success', text: 'アンケートを作成しました' })
+      const statusMessage = initialStatus === 'pending'
+        ? 'アンケートを作成しました（管理者の承認待ちです）'
+        : 'アンケートを作成・公開しました'
+
+      setMessage({ type: 'success', text: statusMessage })
       setShowCreate(false)
       setNewSurvey({ title: '', description: '', points: 10, category: 'task', questions: [{ type: 'multiple_choice', question: '', options: ['', ''], required: true }] })
       fetchSurveys()
@@ -185,6 +261,40 @@ export default function AdminSurveysPage() {
       fetchSurveys()
     } catch (error) {
       console.error('Error toggling status:', error)
+    }
+  }
+
+  // アンケート承認（adminのみ）
+  const handleApproveSurvey = async (surveyId: string) => {
+    try {
+      await updateDoc(doc(db, 'surveys', surveyId), {
+        status: 'active',
+        approvedAt: Timestamp.now(),
+        approvedBy: currentUser?.uid,
+      })
+      setMessage({ type: 'success', text: 'アンケートを承認・公開しました' })
+      fetchSurveys()
+    } catch (error) {
+      console.error('Error approving survey:', error)
+      setMessage({ type: 'error', text: '承認に失敗しました' })
+    }
+  }
+
+  // アンケート却下（adminのみ）
+  const handleRejectSurvey = async (surveyId: string) => {
+    if (!confirm('このアンケートを却下しますか？作成者に通知されます。')) return
+
+    try {
+      await updateDoc(doc(db, 'surveys', surveyId), {
+        status: 'closed',
+        rejectedAt: Timestamp.now(),
+        rejectedBy: currentUser?.uid,
+      })
+      setMessage({ type: 'success', text: 'アンケートを却下しました' })
+      fetchSurveys()
+    } catch (error) {
+      console.error('Error rejecting survey:', error)
+      setMessage({ type: 'error', text: '却下に失敗しました' })
     }
   }
 
@@ -441,6 +551,52 @@ export default function AdminSurveysPage() {
           </div>
         )}
 
+        {/* Pending Surveys (Admin only) */}
+        {userData?.role === 'admin' && surveys.filter(s => s.status === 'pending').length > 0 && (
+          <div className="card mb-6 border-2 border-yellow-500/30">
+            <h2 className="text-lg font-bold text-yellow-400 mb-4 flex items-center gap-2">
+              <span>⏳</span> 承認待ちアンケート
+            </h2>
+            <div className="space-y-3">
+              {surveys.filter(s => s.status === 'pending').map(survey => (
+                <div key={survey.id} className="bg-hatofes-dark p-4 rounded-lg border border-yellow-500/30">
+                  <div className="flex items-start justify-between mb-2">
+                    <div className="flex-1">
+                      <h3 className="text-hatofes-white font-medium">{survey.title}</h3>
+                      <p className="text-sm text-hatofes-gray mt-1">{survey.description}</p>
+                      <div className="flex items-center gap-2 mt-2">
+                        <span className="text-xs px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-400">
+                          承認待ち
+                        </span>
+                        <span className="text-xs text-hatofes-gray">
+                          作成者: {survey.createdByName || '不明'}
+                        </span>
+                        <span className="text-xs text-hatofes-gray">
+                          {survey.points}pt
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2 mt-3">
+                    <button
+                      onClick={() => handleApproveSurvey(survey.id)}
+                      className="btn-main text-sm px-4 py-1.5 bg-green-600 hover:bg-green-700"
+                    >
+                      ✓ 承認・公開
+                    </button>
+                    <button
+                      onClick={() => handleRejectSurvey(survey.id)}
+                      className="btn-sub text-sm px-4 py-1.5 bg-red-600/20 hover:bg-red-600/30 text-red-400"
+                    >
+                      ✗ 却下
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Survey List */}
         <div className="card">
           <h2 className="text-lg font-bold text-hatofes-white mb-4">アンケート一覧</h2>
@@ -545,31 +701,46 @@ export default function AdminSurveysPage() {
                 </button>
               </div>
 
+              {/* CSV Export Button */}
+              {responses.length > 0 && !responsesLoading && (
+                <button
+                  onClick={() => exportSurveyResponsesToCSV(viewingSurvey.title, surveyQuestions, responses)}
+                  className="w-full mb-4 py-2 px-4 bg-green-600 hover:bg-green-500 text-white rounded-lg flex items-center justify-center gap-2 transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                  </svg>
+                  CSVエクスポート ({responses.length}件)
+                </button>
+              )}
+
               {responsesLoading ? (
                 <div className="flex justify-center py-8"><Spinner size="lg" /></div>
               ) : responses.length === 0 ? (
                 <p className="text-hatofes-gray text-center py-4">回答はありません</p>
               ) : (
                 <div className="space-y-4">
-                  {responses.map((resp) => (
-                    <div key={resp.id} className="bg-hatofes-bg p-4 rounded-lg">
-                      <p className="text-sm text-hatofes-accent-yellow font-bold mb-2">{resp.username}</p>
-                      <div className="space-y-2">
-                        {surveyQuestions.map((q, i) => {
-                          const answer = Array.isArray(resp.answers)
-                            ? resp.answers.find((a: unknown) => typeof a === 'object' && a !== null && 'questionId' in a && (a as { questionId: string }).questionId === q.id)
-                            : null;
-                          const answerValue = answer && typeof answer === 'object' && 'value' in answer ? String((answer as { value: unknown }).value) : '−';
-                          return (
-                            <div key={q.id}>
-                              <p className="text-xs text-hatofes-gray">Q{i + 1}: {q.question}</p>
-                              <p className="text-sm text-hatofes-white">{answerValue}</p>
-                            </div>
-                          );
-                        })}
+                  {responses.map((resp) => {
+                    const displayName = resp.grade && resp.class && resp.studentNumber
+                      ? `${resp.username} (${resp.grade}-${resp.class} ${resp.studentNumber}番)`
+                      : resp.username
+                    return (
+                      <div key={resp.id} className="bg-hatofes-bg p-4 rounded-lg">
+                        <p className="text-sm text-hatofes-accent-yellow font-bold mb-2">{displayName}</p>
+                        <div className="space-y-2">
+                          {surveyQuestions.map((q, i) => {
+                            const answerValue = resp.answers[q.id] !== undefined ? String(resp.answers[q.id]) : '−'
+                            return (
+                              <div key={q.id}>
+                                <p className="text-xs text-hatofes-gray">Q{i + 1}: {q.question}</p>
+                                <p className="text-sm text-hatofes-white">{answerValue}</p>
+                              </div>
+                            )
+                          })}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </div>

@@ -14,6 +14,16 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+
+  /* 数字とアルファベットにDINフォントを適用 */
+  * {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 数字を含む要素に自動的にDINフォントを適用 */
+  body, input, button, select, textarea {
+    font-feature-settings: "tnum" 1;
+  }
 }
 
 /* カスタムコンポーネントスタイル */
@@ -139,5 +149,14 @@
   .select-field:focus {
     outline: none;
     border-color: #FFC300;
+  }
+}
+
+/* カスタムユーティリティ */
+@layer utilities {
+  /* すべての要素にDINフォントを優先適用（数字とアルファベット） */
+  * {
+    font-family: 'din-2014', 'hiragino-kaku-gothic-pron', sans-serif !important;
+    font-variant-numeric: tabular-nums;
   }
 }
