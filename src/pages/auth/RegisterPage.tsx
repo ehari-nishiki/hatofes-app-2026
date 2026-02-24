@@ -7,7 +7,7 @@ import { wordListA, wordListB, wordListC } from '@/mocks/wordLists'
 
 export default function RegisterPage() {
   const navigate = useNavigate()
-  const { currentUser, userData, loading: authLoading, userDataChecked } = useAuth()
+  const { currentUser, userData, loading: authLoading, userDataChecked, refreshUserData } = useAuth()
   const {
     state,
     prevStep,
@@ -126,7 +126,10 @@ export default function RegisterPage() {
             grade={state.data.grade}
             classNumber={state.data.classNumber}
             studentNumber={state.data.studentNumber}
-            onStart={() => navigate('/home')}
+            onStart={async () => {
+              await refreshUserData()
+              navigate('/home')
+            }}
             onEdit={() => goToStep('grade')}
           />
         )}
@@ -332,7 +335,7 @@ function SuccessStep({
   grade?: number | 'teacher'
   classNumber?: string
   studentNumber?: number
-  onStart: () => void
+  onStart: () => void | Promise<void>
   onEdit: () => void
 }) {
   const gradeText = grade === 'teacher' ? '教員' : `${grade}年`
