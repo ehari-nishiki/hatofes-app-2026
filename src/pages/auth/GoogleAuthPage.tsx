@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { signInWithPopup, signInWithRedirect, getRedirectResult, User } from 'firebase/auth'
+import { signInWithPopup, signInWithRedirect, getRedirectResult, User, setPersistence, browserLocalPersistence } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
 import { auth, googleProvider, db } from '../../lib/firebase'
 import { useAuth } from '../../contexts/AuthContext'
@@ -14,6 +14,24 @@ const isMobile = (): boolean => {
   const mobileUserAgent = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent)
 
   return (hasTouchScreen && isSmallScreen) || mobileUserAgent
+}
+
+// Safari判定
+const isSafari = (): boolean => {
+  const ua = navigator.userAgent.toLowerCase()
+  return ua.includes('safari') && !ua.includes('chrome') && !ua.includes('android')
+}
+
+// sessionStorageが正常に機能するかチェック
+const isSessionStorageAvailable = (): boolean => {
+  try {
+    const testKey = '__firebase_test__'
+    sessionStorage.setItem(testKey, 'test')
+    sessionStorage.removeItem(testKey)
+    return true
+  } catch {
+    return false
+  }
 }
 
 // localStorage に永続化されたログを読み込む
@@ -112,27 +130,12 @@ export default function GoogleAuthPage() {
     addDebugLog('=== Page loaded/mounted ===')
     addDebugLog(`useEffect triggered - URL: ${window.location.href}`)
 
-    // 既に処理済みかチェック
-    const redirectProcessed = sessionStorage.getItem('redirect_processed')
-    if (redirectProcessed === 'true') {
-      addDebugLog('Redirect already processed this session, skipping')
-      setLoading(false)
-      return
-    }
-
     const handleRedirectResult = async () => {
       addDebugLog('Starting redirect check')
 
       try {
-        // 処理中フラグを設定
-        sessionStorage.setItem('redirect_processing', 'true')
-
         addDebugLog('Calling getRedirectResult...')
         const result = await getRedirectResult(auth)
-
-        // 処理済みフラグを設定
-        sessionStorage.setItem('redirect_processed', 'true')
-        sessionStorage.removeItem('redirect_processing')
 
         addDebugLog(`Redirect result: ${result ? 'User found' : 'No result'}`)
 
@@ -196,30 +199,26 @@ export default function GoogleAuthPage() {
         console.error('[GoogleAuth] Error processing redirect result:', err)
         const errMsg = err instanceof Error ? err.message : String(err)
         addDebugLog(`Redirect error: ${errMsg}`)
-        sessionStorage.removeItem('redirect_processing')
-        logAuthError('AUTH_008', err, { step: 'auth' }).catch(console.error)
-        setError('ログインに失敗しました。もう一度お試しください')
+
+        // Safari ITP/sessionStorage問題の検出
+        if (errMsg.includes('missing initial state') || errMsg.includes('storage')) {
+          addDebugLog('Detected Safari ITP/storage issue')
+          if (isSafari()) {
+            setError('Safariの設定が原因でログインできません。\n\n【解決方法】\n設定 → Safari → 「サイト越えトラッキングを防ぐ」をオフにしてください\n\nまたはChromeブラウザをお試しください')
+          } else {
+            setError('ブラウザのストレージがブロックされています。プライベートブラウズを解除するか、別のブラウザをお試しください')
+          }
+        } else {
+          logAuthError('AUTH_008', err, { step: 'auth' }).catch(console.error)
+          setError('ログインに失敗しました。もう一度お試しください')
+        }
         setLoading(false)
         processingAuthRef.current = false
       }
     }
 
-    // 処理中でなければ実行
-    const isProcessing = sessionStorage.getItem('redirect_processing')
-    if (isProcessing !== 'true') {
-      handleRedirectResult()
-    } else {
-      addDebugLog('Redirect processing in progress, waiting...')
-      setLoading(false)
-    }
+    handleRedirectResult()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // クリーンアップ用useEffect追加
-  useEffect(() => {
-    return () => {
-      sessionStorage.removeItem('redirect_processing')
-    }
-  }, [])
 
   const handleGoogleAuth = async () => {
     setLoading(true)
@@ -228,69 +227,92 @@ export default function GoogleAuthPage() {
 
     try {
       const mobile = isMobile()
+      const safari = isSafari()
+      const sessionStorageOk = isSessionStorageAvailable()
+
       addDebugLog(`Device: ${mobile ? 'Mobile' : 'Desktop'}`)
+      addDebugLog(`Browser: ${safari ? 'Safari' : 'Other'}`)
+      addDebugLog(`sessionStorage: ${sessionStorageOk ? 'OK' : 'BLOCKED'}`)
       addDebugLog(`User agent: ${navigator.userAgent}`)
-      addDebugLog(`Window size: ${window.innerWidth}x${window.innerHeight}`)
-      addDebugLog(`localStorage test: ${(() => { try { localStorage.setItem('test', '1'); localStorage.removeItem('test'); return 'OK' } catch { return 'BLOCKED' } })()}`)
 
-      // モバイルでもまず Popup を試す（iOS Safari 14.5+, Android Chrome 88+ はサポート）
-      const usePopup = !mobile || window.innerWidth >= 768 // タブレットサイズ以上は Popup
-
-      if (usePopup) {
-        // Popup方式
-        addDebugLog('Attempting popup sign-in')
-        try {
-          const result = await signInWithPopup(auth, googleProvider)
-          addDebugLog(`Popup result: ${result.user.email}`)
-
-          // ドメインチェック
-          if (import.meta.env.VITE_RESTRICT_DOMAIN === 'true') {
-            const email = result.user.email || ''
-            if (!email.endsWith('@g.nagano-c.ed.jp')) {
-              logAuthError('AUTH_001', new Error('Invalid email domain in popup'), {
-                email,
-                step: 'auth',
-              }, result.user.uid).catch(console.error)
-              setError('学校のGoogleアカウント（@g.nagano-c.ed.jp）でログインしてください')
-              await auth.signOut()
-              setLoading(false)
-              return
-            }
-          }
-
-          // 直接ナビゲーション
-          await handlePostAuthNavigation(result.user)
-          return
-        } catch (popupErr) {
-          addDebugLog(`Popup failed: ${popupErr instanceof Error ? popupErr.message : String(popupErr)}`)
-
-          // Popup がブロックされた場合のみ Redirect にフォールバック
-          if (popupErr instanceof Error && (popupErr.message.includes('popup-blocked') || popupErr.message.includes('popup-closed-by-user'))) {
-            if (!mobile) {
-              // デスクトップでは Popup エラーを表示
-              setError('ポップアップがブロックされました。ブラウザの設定を確認してください')
-              setLoading(false)
-              return
-            }
-            // モバイルは Redirect にフォールバック
-            addDebugLog('Falling back to redirect sign-in')
-          } else {
-            throw popupErr // その他のエラーは外側の catch で処理
-          }
-        }
+      // Safari + sessionStorage blocked の場合は事前に警告
+      if (safari && !sessionStorageOk) {
+        addDebugLog('Safari with blocked sessionStorage detected')
       }
 
-      // モバイル: リダイレクト方式（Popup が使えない場合のみ）
-      addDebugLog('Starting redirect sign-in')
-      addDebugLog(`Auth domain: ${auth.config.authDomain}`)
-      addDebugLog(`Current URL: ${window.location.href}`)
-      addDebugLog(`Redirect will return to: ${window.location.origin}${window.location.pathname}`)
+      // 常にPopup方式を試行（Safari ITP問題を回避）
+      addDebugLog('Attempting popup sign-in')
+      try {
+        const result = await signInWithPopup(auth, googleProvider)
+        addDebugLog(`Popup result: ${result.user.email}`)
 
-      await signInWithRedirect(auth, googleProvider)
-      addDebugLog('Redirect initiated (this log will disappear after redirect)')
-      // この後、ページ全体がリダイレクトされるため、以降のコードは実行されない
+        // ドメインチェック
+        if (import.meta.env.VITE_RESTRICT_DOMAIN === 'true') {
+          const email = result.user.email || ''
+          if (!email.endsWith('@g.nagano-c.ed.jp')) {
+            logAuthError('AUTH_001', new Error('Invalid email domain in popup'), {
+              email,
+              step: 'auth',
+            }, result.user.uid).catch(console.error)
+            setError('学校のGoogleアカウント（@g.nagano-c.ed.jp）でログインしてください')
+            await auth.signOut()
+            setLoading(false)
+            return
+          }
+        }
 
-      // Redirect では return されないため、ここには到達しない
+        // 直接ナビゲーション
+        await handlePostAuthNavigation(result.user)
+        return
+      } catch (popupErr) {
+        addDebugLog(`Popup failed: ${popupErr instanceof Error ? popupErr.message : String(popupErr)}`)
+        console.error('[GoogleAuth] Popup error:', popupErr)
+
+        // ポップアップが閉じられた場合
+        if (popupErr instanceof Error && popupErr.message.includes('popup-closed-by-user')) {
+          setError('ログインがキャンセルされました')
+          setLoading(false)
+          return
+        }
+
+        // ポップアップがブロックされた場合
+        if (popupErr instanceof Error && (
+          popupErr.message.includes('popup-blocked') ||
+          popupErr.message.includes('cross-origin')
+        )) {
+          // SafariでsessionStorageが使えない場合はリダイレクト不可
+          if (safari && !sessionStorageOk) {
+            setError('Safariでポップアップがブロックされています。\n\n【解決方法】\n設定アプリ → Safari → 「ポップアップブロック」をオフにしてください')
+            setLoading(false)
+            return
+          }
+
+          // それ以外のブラウザはリダイレクトにフォールバック
+          addDebugLog('Falling back to redirect sign-in')
+          try {
+            await setPersistence(auth, browserLocalPersistence)
+            await signInWithRedirect(auth, googleProvider)
+            return
+          } catch (redirectErr) {
+            addDebugLog(`Redirect also failed: ${redirectErr instanceof Error ? redirectErr.message : String(redirectErr)}`)
+            setError('ログインに失敗しました。ブラウザの設定を確認してください')
+            setLoading(false)
+            return
+          }
+        }
+
+        // Safari固有のエラーハンドリング
+        if (safari) {
+          setError('Safariでログインできません。\n\n【解決方法】\n1. 設定 → Safari → 「ポップアップブロック」をオフ\n2. 設定 → Safari → 「サイト越えトラッキングを防ぐ」をオフ\n\nまたはChromeブラウザをお試しください')
+          setLoading(false)
+          return
+        }
+
+        // その他のエラー
+        setError('ログインに失敗しました。もう一度お試しください')
+        setLoading(false)
+        return
+      }
     } catch (err: unknown) {
       console.error('Error during Google sign-in:', err)
       addDebugLog(`Sign-in error: ${err instanceof Error ? err.message : String(err)}`)
@@ -347,8 +369,8 @@ export default function GoogleAuthPage() {
           </div>
         )}
 
-        {/* Debug Info */}
-        {debugInfo.length > 0 && (
+        {/* Debug Info - 開発環境のみ表示 */}
+        {import.meta.env.DEV && debugInfo.length > 0 && (
           <div className="bg-blue-500/10 border border-blue-500 text-blue-400 px-3 py-2 rounded-lg text-xs text-left">
             <div className="flex justify-between items-center mb-1">
               <div className="font-bold">🔍 Debug Log (永続化):</div>
@@ -371,37 +393,41 @@ export default function GoogleAuthPage() {
           </div>
         )}
 
-        {/* Status Info */}
+        {/* Status Info - ローディング表示（本番でも表示） */}
         {loading && (
           <div className="bg-yellow-500/10 border border-yellow-500 text-yellow-400 px-4 py-3 rounded-lg text-sm">
             <div className="flex items-center justify-center gap-2">
               <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-yellow-400"></div>
               <span>認証処理中...</span>
             </div>
-            <div className="text-xs mt-2 opacity-70">
-              User: {currentUser ? '認証済み' : '未認証'}<br/>
-              UserData: {userData ? '取得済み' : '未取得'}<br/>
-              Processing: {processingAuthRef.current ? 'true' : 'false'}
-            </div>
+            {import.meta.env.DEV && (
+              <div className="text-xs mt-2 opacity-70">
+                User: {currentUser ? '認証済み' : '未認証'}<br/>
+                UserData: {userData ? '取得済み' : '未取得'}<br/>
+                Processing: {processingAuthRef.current ? 'true' : 'false'}
+              </div>
+            )}
           </div>
         )}
 
-        {/* Current State Info */}
-        <div className="bg-gray-500/10 border border-gray-500 text-gray-400 px-3 py-2 rounded-lg text-xs">
-          <div className="font-bold mb-2">📊 System State:</div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>Auth Loading: {authLoading ? '🟡' : '✅'}</div>
-            <div>Data Checked: {userDataChecked ? '✅' : '🟡'}</div>
-            <div>Current User: {currentUser ? '✅' : '❌'}</div>
-            <div>User Data: {userData ? '✅' : '❌'}</div>
-            <div>Page Loading: {loading ? '🟡' : '✅'}</div>
-            <div>Processing: {processingAuthRef.current ? '🟡' : '✅'}</div>
+        {/* Current State Info - 開発環境のみ表示 */}
+        {import.meta.env.DEV && (
+          <div className="bg-gray-500/10 border border-gray-500 text-gray-400 px-3 py-2 rounded-lg text-xs">
+            <div className="font-bold mb-2">📊 System State:</div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>Auth Loading: {authLoading ? '🟡' : '✅'}</div>
+              <div>Data Checked: {userDataChecked ? '✅' : '🟡'}</div>
+              <div>Current User: {currentUser ? '✅' : '❌'}</div>
+              <div>User Data: {userData ? '✅' : '❌'}</div>
+              <div>Page Loading: {loading ? '🟡' : '✅'}</div>
+              <div>Processing: {processingAuthRef.current ? '🟡' : '✅'}</div>
+            </div>
+            <div className="mt-2 pt-2 border-t border-gray-500/30 text-[10px]">
+              <div>Device: {isMobile() ? '📱 Mobile' : '💻 Desktop'}</div>
+              <div>User Agent: {navigator.userAgent.substring(0, 50)}...</div>
+            </div>
           </div>
-          <div className="mt-2 pt-2 border-t border-gray-500/30 text-[10px]">
-            <div>Device: {isMobile() ? '📱 Mobile' : '💻 Desktop'}</div>
-            <div>User Agent: {navigator.userAgent.substring(0, 50)}...</div>
-          </div>
-        </div>
+        )}
 
         {/* Google Login Button */}
         <button
