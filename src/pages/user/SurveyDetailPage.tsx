@@ -4,7 +4,8 @@ import AppHeader from '@/components/layout/AppHeader'
 import { useAuth } from '@/contexts/AuthContext'
 import { getSurveyById, checkAlreadyAnswered, submitSurveyResponse } from '@/lib/surveyService'
 import { PointRewardModal } from '@/components/ui/PointRewardModal'
-import type { Survey, Answer, Question } from '@/types/firestore'
+import ExtendedQuestionCard from '@/components/survey/ExtendedQuestionCard'
+import type { Survey, Answer, ExtendedQuestion } from '@/types/firestore'
 
 export default function SurveyDetailPage() {
   const { surveyId } = useParams<{ surveyId: string }>()
@@ -14,7 +15,7 @@ export default function SurveyDetailPage() {
   const [survey, setSurvey] = useState<(Survey & { id: string }) | null>(null)
   const [loading, setLoading] = useState(true)
   const [isAnswered, setIsAnswered] = useState(false)
-  const [answers, setAnswers] = useState<Record<string, string | number>>({})
+  const [answers, setAnswers] = useState<Record<string, string | number | string[]>>({})
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showRewardModal, setShowRewardModal] = useState(false)
@@ -42,7 +43,7 @@ export default function SurveyDetailPage() {
     fetchSurvey()
   }, [surveyId, currentUser])
 
-  const handleAnswerChange = (questionId: string, value: string | number) => {
+  const handleAnswerChange = (questionId: string, value: string | number | string[]) => {
     setAnswers(prev => ({ ...prev, [questionId]: value }))
   }
 
@@ -51,7 +52,13 @@ export default function SurveyDetailPage() {
 
     // Validate required questions
     const unansweredRequired = survey.questions.filter(
-      (q) => q.required && !answers[q.id]
+      (q) => {
+        const answer = answers[q.id]
+        if (!q.required) return false
+        if (answer === undefined || answer === null || answer === '') return true
+        if (Array.isArray(answer) && answer.length === 0) return true
+        return false
+      }
     )
 
     if (unansweredRequired.length > 0) {
@@ -66,7 +73,7 @@ export default function SurveyDetailPage() {
       const formattedAnswers: Answer[] = Object.entries(answers).map(
         ([questionId, value]) => ({
           questionId,
-          value,
+          value: Array.isArray(value) ? value.join(', ') : value,
         })
       )
 
@@ -196,15 +203,40 @@ export default function SurveyDetailPage() {
             <>
               {/* Questions */}
               <div className="space-y-4">
-                {survey.questions.map((question, index) => (
-                  <QuestionCard
-                    key={question.id}
-                    question={question}
-                    index={index}
-                    value={answers[question.id]}
-                    onChange={(value) => handleAnswerChange(question.id, value)}
-                  />
-                ))}
+                {survey.questions.map((question, index) => {
+                  // Check conditional visibility
+                  const extQ = question as ExtendedQuestion
+                  if (extQ.showIf) {
+                    const conditionAnswer = answers[extQ.showIf.questionId]
+                    if (conditionAnswer !== extQ.showIf.value) {
+                      return null
+                    }
+                  }
+
+                  // Use extended question card for extended types
+                  const extendedTypes = ['image_choice', 'slider', 'ranking', 'checkbox', 'long_text', 'datetime']
+                  if (extendedTypes.includes(question.type)) {
+                    return (
+                      <ExtendedQuestionCard
+                        key={question.id}
+                        question={question as ExtendedQuestion}
+                        index={index}
+                        value={answers[question.id]}
+                        onChange={(value) => handleAnswerChange(question.id, value)}
+                      />
+                    )
+                  }
+
+                  return (
+                    <ExtendedQuestionCard
+                      key={question.id}
+                      question={question as ExtendedQuestion}
+                      index={index}
+                      value={answers[question.id]}
+                      onChange={(value) => handleAnswerChange(question.id, value)}
+                    />
+                  )
+                })}
               </div>
 
               {/* Error Message */}
@@ -237,96 +269,4 @@ export default function SurveyDetailPage() {
   )
 }
 
-// Question Card Component
-interface QuestionCardProps {
-  question: Question
-  index: number
-  value: string | number | undefined
-  onChange: (value: string | number) => void
-}
-
-function QuestionCard({ question, index, value, onChange }: QuestionCardProps) {
-  return (
-    <div className="card">
-      <div className="flex items-start gap-2 mb-3">
-        <span className="text-xs bg-hatofes-dark px-2 py-1 rounded text-hatofes-gray">
-          Q{index + 1}
-        </span>
-        {question.required && (
-          <span className="text-xs text-red-400">必須</span>
-        )}
-      </div>
-      <h3 className="text-hatofes-white font-medium mb-4">{question.question}</h3>
-
-      {question.imageUrl && (
-        <img src={question.imageUrl} alt="質問画像" className="mb-4 w-full rounded-lg max-h-48 object-contain border border-hatofes-gray" />
-      )}
-
-      {/* Multiple Choice */}
-      {question.type === 'multiple_choice' && question.options && (
-        <div className="space-y-2">
-          {question.options.map((option, i) => (
-            <label
-              key={i}
-              className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors ${
-                value === option
-                  ? 'bg-hatofes-accent-yellow/20 border border-hatofes-accent-yellow'
-                  : 'bg-hatofes-dark hover:bg-hatofes-gray/20'
-              }`}
-            >
-              <input
-                type="radio"
-                name={question.id}
-                value={option}
-                checked={value === option}
-                onChange={() => onChange(option)}
-                className="sr-only"
-              />
-              <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
-                value === option
-                  ? 'border-hatofes-accent-yellow'
-                  : 'border-hatofes-gray'
-              }`}>
-                {value === option && (
-                  <div className="w-2 h-2 rounded-full bg-hatofes-accent-yellow" />
-                )}
-              </div>
-              <span className="text-hatofes-white text-sm">{option}</span>
-            </label>
-          ))}
-        </div>
-      )}
-
-      {/* Text Input */}
-      {question.type === 'text' && (
-        <textarea
-          value={value as string || ''}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="回答を入力してください"
-          rows={4}
-          className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-4 py-3 text-hatofes-white placeholder-hatofes-gray resize-none focus:outline-none focus:border-hatofes-accent-yellow"
-        />
-      )}
-
-      {/* Rating */}
-      {question.type === 'rating' && (
-        <div className="flex justify-center gap-2">
-          {[1, 2, 3, 4, 5].map((rating) => (
-            <button
-              key={rating}
-              type="button"
-              onClick={() => onChange(rating)}
-              className={`w-12 h-12 rounded-lg font-bold text-lg transition-colors ${
-                value === rating
-                  ? 'bg-hatofes-accent-yellow text-hatofes-dark'
-                  : 'bg-hatofes-dark text-hatofes-white hover:bg-hatofes-gray/30'
-              }`}
-            >
-              {rating}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
+// QuestionCard component removed - using ExtendedQuestionCard instead

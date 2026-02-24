@@ -2,17 +2,63 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ═══════════════════════════════════════════════════════════════
+   テーマカラー定義（CSS変数）
+   ═══════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ダークモード（デフォルト） */
+  --color-bg: #1a1a1a;
+  --color-bg-secondary: #0d0d0d;
+  --color-bg-card: #2a2a2a;
+  --color-bg-elevated: #333333;
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #a0a0a0;
+  --color-text-muted: #666666;
+  --color-border: #666666;
+  --color-border-light: #444444;
+  --color-accent-yellow: #FFC300;
+  --color-accent-orange: #FF4E00;
+  --color-shadow: rgba(255, 255, 255, 0.15);
+  --color-overlay: rgba(0, 0, 0, 0.8);
+  --color-input-bg: #0d0d0d;
+}
+
+[data-theme="light"] {
+  --color-bg: #f5f5f5;
+  --color-bg-secondary: #ffffff;
+  --color-bg-card: #ffffff;
+  --color-bg-elevated: #fafafa;
+  --color-text-primary: #1a1a1a;
+  --color-text-secondary: #555555;
+  --color-text-muted: #888888;
+  --color-border: #dddddd;
+  --color-border-light: #eeeeee;
+  --color-accent-yellow: #e6b000;
+  --color-accent-orange: #e64500;
+  --color-shadow: rgba(0, 0, 0, 0.1);
+  --color-overlay: rgba(255, 255, 255, 0.9);
+  --color-input-bg: #ffffff;
+}
+
 /* カスタムベーススタイル */
 @layer base {
   html {
     font-family: 'hiragino-kaku-gothic-pron', sans-serif;
+    transition: background-color 0.3s ease, color 0.3s ease;
   }
 
   body {
-    background-color: #1a1a1a;
-    color: #ffffff;
+    background-color: var(--color-bg);
+    color: var(--color-text-primary);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    transition: background-color 0.3s ease, color 0.3s ease;
+    overflow-x: hidden;
+  }
+
+  html {
+    overflow-x: hidden;
   }
 
   /* 数字とアルファベットにDINフォントを適用 */
@@ -30,7 +76,7 @@
 @layer components {
   /* メインボタン（グラデーション） */
   .btn-main {
-    background: linear-gradient(135deg, #FFC300 0%, #FF4E00 100%);
+    background: linear-gradient(135deg, var(--color-accent-yellow) 0%, var(--color-accent-orange) 100%);
     color: #ffffff;
     padding: 0.5rem 1.5rem;
     border-radius: 0.25rem;
@@ -42,7 +88,7 @@
   }
 
   .btn-main:hover {
-    background: linear-gradient(135deg, #e6b000 0%, #e64500 100%);
+    filter: brightness(0.9);
   }
 
   .btn-main:active {
@@ -52,27 +98,34 @@
   /* サブボタン（枠線） */
   .btn-sub {
     background: transparent;
-    color: #ffffff;
+    color: var(--color-text-primary);
     padding: 0.5rem 1.5rem;
     border-radius: 0.25rem;
     font-weight: 500;
     font-size: 0.875rem;
     letter-spacing: 0.025em;
-    border: 1px solid #666666;
-    transition: border-color 0.2s;
+    border: 1px solid var(--color-border);
+    transition: border-color 0.2s, background-color 0.2s;
     font-family: 'din-2014', sans-serif;
   }
 
   .btn-sub:hover {
-    border-color: #FFC300;
+    border-color: var(--color-accent-yellow);
+    background-color: var(--color-bg-elevated);
   }
 
-  /* カード（ダークテーマ + ドロップシャドウ） */
+  /* カード（テーマ対応 + ドロップシャドウ） */
   .card {
-    background-color: #2a2a2a;
+    background-color: var(--color-bg-card);
     border-radius: 0.75rem;
     padding: 1rem;
-    box-shadow: 0 0 25px 0 rgba(255, 255, 255, 0.3);
+    box-shadow: 0 0 25px 0 var(--color-shadow);
+    transition: background-color 0.3s ease, box-shadow 0.3s ease;
+  }
+
+  /* ライトモード用カードボーダー */
+  [data-theme="light"] .card {
+    border: 1px solid var(--color-border-light);
   }
 
   /* ポイントバッジ（グラデーション） */
@@ -80,7 +133,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: linear-gradient(135deg, #FFC300 0%, #FF4E00 100%);
+    background: linear-gradient(135deg, var(--color-accent-yellow) 0%, var(--color-accent-orange) 100%);
     color: #ffffff;
     font-size: 0.75rem;
     font-weight: 700;
@@ -94,7 +147,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: linear-gradient(135deg, #FFC300 0%, #FF4E00 100%);
+    background: linear-gradient(135deg, var(--color-accent-yellow) 0%, var(--color-accent-orange) 100%);
     color: #ffffff;
     font-size: 0.75rem;
     font-weight: 700;
@@ -107,48 +160,77 @@
 
   /* グラデーションテキスト */
   .text-gradient {
-    background: linear-gradient(135deg, #FFC300 0%, #FF4E00 100%);
+    background: linear-gradient(135deg, var(--color-accent-yellow) 0%, var(--color-accent-orange) 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
   }
 
-  /* 入力フィールド（ダークテーマ） */
+  /* 入力フィールド（テーマ対応） */
   .input-field {
     width: 100%;
-    background-color: #0d0d0d;
-    color: #ffffff;
-    border: 1px solid #666666;
+    background-color: var(--color-input-bg);
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-border);
     border-radius: 0.5rem;
     padding: 0.75rem 1rem;
-    transition: border-color 0.2s;
+    transition: border-color 0.2s, background-color 0.3s;
   }
 
   .input-field:focus {
     outline: none;
-    border-color: #FFC300;
+    border-color: var(--color-accent-yellow);
   }
 
   .input-field::placeholder {
-    color: #666666;
+    color: var(--color-text-muted);
   }
 
-  /* セレクトボックス（ダークテーマ） */
+  /* セレクトボックス（テーマ対応） */
   .select-field {
     width: 100%;
-    background-color: #0d0d0d;
-    color: #ffffff;
-    border: 1px solid #666666;
+    background-color: var(--color-input-bg);
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-border);
     border-radius: 0.5rem;
     padding: 0.75rem 1rem;
-    transition: border-color 0.2s;
+    transition: border-color 0.2s, background-color 0.3s;
     appearance: none;
     cursor: pointer;
   }
 
   .select-field:focus {
     outline: none;
-    border-color: #FFC300;
+    border-color: var(--color-accent-yellow);
+  }
+
+  /* テーマ対応ユーティリティクラス */
+  .theme-bg {
+    background-color: var(--color-bg);
+  }
+
+  .theme-bg-secondary {
+    background-color: var(--color-bg-secondary);
+  }
+
+  .theme-bg-card {
+    background-color: var(--color-bg-card);
+  }
+
+  .theme-text {
+    color: var(--color-text-primary);
+  }
+
+  .theme-text-secondary {
+    color: var(--color-text-secondary);
+  }
+
+  .theme-text-muted {
+    color: var(--color-text-muted);
+  }
+
+  .theme-border {
+    border-color: var(--color-border);
   }
 }
 
@@ -159,4 +241,310 @@
     font-family: 'din-2014', 'hiragino-kaku-gothic-pron', sans-serif !important;
     font-variant-numeric: tabular-nums;
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   オーロラグラデーションエフェクト
+   ═══════════════════════════════════════════════════════════════ */
+
+@keyframes aurora {
+  0%, 100% {
+    background-position: 0% 50%;
+    opacity: 0.6;
+  }
+  25% {
+    background-position: 50% 100%;
+    opacity: 0.8;
+  }
+  50% {
+    background-position: 100% 50%;
+    opacity: 0.5;
+  }
+  75% {
+    background-position: 50% 0%;
+    opacity: 0.7;
+  }
+}
+
+@keyframes aurora-pulse {
+  0%, 100% {
+    transform: scale(1) rotate(0deg);
+    filter: blur(40px);
+  }
+  33% {
+    transform: scale(1.1) rotate(2deg);
+    filter: blur(50px);
+  }
+  66% {
+    transform: scale(0.95) rotate(-1deg);
+    filter: blur(35px);
+  }
+}
+
+/* オーロラ背景コンテナ */
+.aurora-container {
+  position: relative;
+  overflow: hidden;
+}
+
+/* オーロラエフェクト（オーバーレイ） */
+.aurora-effect {
+  position: absolute;
+  inset: -50%;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+    ellipse 80% 50% at 50% 50%,
+    rgba(255, 195, 0, 0.15) 0%,
+    rgba(255, 78, 0, 0.1) 30%,
+    rgba(147, 51, 234, 0.08) 60%,
+    transparent 100%
+  );
+  background-size: 200% 200%;
+  animation: aurora 12s ease-in-out infinite;
+}
+
+.aurora-effect::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse 60% 40% at 30% 70%,
+    rgba(255, 195, 0, 0.12) 0%,
+    rgba(59, 130, 246, 0.08) 40%,
+    transparent 70%
+  );
+  background-size: 200% 200%;
+  animation: aurora 15s ease-in-out infinite reverse;
+}
+
+.aurora-effect::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse 50% 60% at 70% 30%,
+    rgba(255, 78, 0, 0.1) 0%,
+    rgba(168, 85, 247, 0.06) 50%,
+    transparent 80%
+  );
+  background-size: 200% 200%;
+  animation: aurora 18s ease-in-out infinite;
+  animation-delay: -5s;
+}
+
+/* オーロラブロブ（より有機的な動き） */
+.aurora-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(60px);
+  animation: aurora-pulse 20s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.aurora-blob-1 {
+  width: 300px;
+  height: 300px;
+  background: radial-gradient(circle, rgba(255, 195, 0, 0.3) 0%, transparent 70%);
+  top: -100px;
+  left: -50px;
+  animation-delay: 0s;
+}
+
+.aurora-blob-2 {
+  width: 250px;
+  height: 250px;
+  background: radial-gradient(circle, rgba(255, 78, 0, 0.25) 0%, transparent 70%);
+  top: 50%;
+  right: -80px;
+  animation-delay: -7s;
+}
+
+.aurora-blob-3 {
+  width: 200px;
+  height: 200px;
+  background: radial-gradient(circle, rgba(147, 51, 234, 0.2) 0%, transparent 70%);
+  bottom: -50px;
+  left: 30%;
+  animation-delay: -14s;
+}
+
+/* カード用の軽量オーロラ効果 */
+.card-aurora {
+  position: relative;
+  overflow: hidden;
+}
+
+.card-aurora::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 195, 0, 0.05) 0%,
+    transparent 30%,
+    rgba(255, 78, 0, 0.03) 70%,
+    transparent 100%
+  );
+  background-size: 300% 300%;
+  animation: aurora 8s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.card-aurora > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ライトモード用のオーロラ調整 */
+[data-theme="light"] .aurora-effect {
+  opacity: 0.4;
+}
+
+[data-theme="light"] .aurora-blob {
+  opacity: 0.3;
+}
+
+[data-theme="light"] .card-aurora::before {
+  background: linear-gradient(
+    135deg,
+    rgba(255, 195, 0, 0.08) 0%,
+    transparent 30%,
+    rgba(255, 78, 0, 0.05) 70%,
+    transparent 100%
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ふわふわドロップシャドウアニメーション
+   ═══════════════════════════════════════════════════════════════ */
+
+@keyframes shadow-float {
+  0%, 100% {
+    box-shadow:
+      0 4px 20px rgba(255, 195, 0, 0.15),
+      0 8px 40px rgba(255, 78, 0, 0.08);
+  }
+  50% {
+    box-shadow:
+      0 8px 30px rgba(255, 195, 0, 0.25),
+      0 16px 60px rgba(255, 78, 0, 0.15);
+  }
+}
+
+@keyframes shadow-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 20px rgba(255, 195, 0, 0.2),
+      0 0 40px rgba(255, 78, 0, 0.1),
+      0 0 60px rgba(147, 51, 234, 0.05);
+  }
+  33% {
+    box-shadow:
+      0 0 25px rgba(255, 195, 0, 0.3),
+      0 0 50px rgba(255, 78, 0, 0.15),
+      0 0 80px rgba(147, 51, 234, 0.1);
+  }
+  66% {
+    box-shadow:
+      0 0 15px rgba(255, 195, 0, 0.15),
+      0 0 35px rgba(255, 78, 0, 0.08),
+      0 0 50px rgba(147, 51, 234, 0.03);
+  }
+}
+
+@keyframes glow-breathe {
+  0%, 100% {
+    filter: drop-shadow(0 0 10px rgba(255, 195, 0, 0.3));
+  }
+  50% {
+    filter: drop-shadow(0 0 20px rgba(255, 195, 0, 0.5));
+  }
+}
+
+/* フェードインアニメーション */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in-scale {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes float-gentle {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+/* ユーティリティクラス */
+.shadow-float {
+  animation: shadow-float 4s ease-in-out infinite;
+}
+
+.shadow-pulse {
+  animation: shadow-pulse 5s ease-in-out infinite;
+}
+
+.glow-breathe {
+  animation: glow-breathe 3s ease-in-out infinite;
+}
+
+.fade-in-up {
+  animation: fade-in-up 0.6s ease-out forwards;
+}
+
+.fade-in-scale {
+  animation: fade-in-scale 0.5s ease-out forwards;
+}
+
+.float-gentle {
+  animation: float-gentle 3s ease-in-out infinite;
+}
+
+/* ディレイ付きフェードイン */
+.fade-in-delay-1 { animation-delay: 0.1s; opacity: 0; }
+.fade-in-delay-2 { animation-delay: 0.2s; opacity: 0; }
+.fade-in-delay-3 { animation-delay: 0.3s; opacity: 0; }
+.fade-in-delay-4 { animation-delay: 0.4s; opacity: 0; }
+.fade-in-delay-5 { animation-delay: 0.5s; opacity: 0; }
+
+/* カードのふわふわシャドウ */
+.card-glow {
+  position: relative;
+  animation: shadow-float 4s ease-in-out infinite;
+}
+
+.card-glow::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 195, 0, 0.1) 0%,
+    rgba(255, 78, 0, 0.05) 50%,
+    rgba(147, 51, 234, 0.05) 100%
+  );
+  border-radius: inherit;
+  z-index: -1;
+  filter: blur(10px);
+  animation: aurora 8s ease-in-out infinite;
 }

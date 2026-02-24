@@ -23,6 +23,9 @@ import SettingsPage from './pages/user/SettingsPage'
 import GachaPage from './pages/user/GachaPage'
 import TetrisPage from './pages/user/TetrisPage'
 import LevelPage from './pages/user/LevelPage'
+import BoothListPage from './pages/user/BoothListPage'
+import EventSchedulePage from './pages/user/EventSchedulePage'
+import RadioPage from './pages/user/RadioPage'
 
 // Admin pages
 import AdminDashboard from './pages/admin/AdminDashboard'
@@ -32,6 +35,10 @@ import AdminNotificationsPage from './pages/admin/AdminNotificationsPage'
 import AdminUsersPage from './pages/admin/AdminUsersPage'
 import AdminGachaPage from './pages/admin/AdminGachaPage'
 import AuthErrorsPage from './pages/admin/AuthErrorsPage'
+import AdminBoothsPage from './pages/admin/AdminBoothsPage'
+import AdminEventsPage from './pages/admin/AdminEventsPage'
+import AdminRadioPage from './pages/admin/AdminRadioPage'
+import ExecutiveDashboard from './pages/executive/ExecutiveDashboard'
 
 // Route protection
 import { ProtectedRoute } from './components/auth/ProtectedRoute'
@@ -71,6 +78,10 @@ function App() {
         <Route path="/gacha" element={<ProtectedRoute><GachaPage /></ProtectedRoute>} />
         <Route path="/tetris" element={<ProtectedRoute><TetrisPage /></ProtectedRoute>} />
         <Route path="/level" element={<ProtectedRoute><LevelPage /></ProtectedRoute>} />
+        <Route path="/booths" element={<ProtectedRoute><BoothListPage /></ProtectedRoute>} />
+        <Route path="/events" element={<ProtectedRoute><EventSchedulePage /></ProtectedRoute>} />
+        <Route path="/radio" element={<ProtectedRoute><RadioPage /></ProtectedRoute>} />
+        <Route path="/executive" element={<ProtectedRoute><ExecutiveDashboard /></ProtectedRoute>} />
 
         {/* Admin routes - Protected by StaffRoute with different access levels */}
         <Route path="/admin" element={<StaffRoute staffAllowed={false}><AdminDashboard /></StaffRoute>} />
@@ -81,6 +92,9 @@ function App() {
         <Route path="/admin/users" element={<StaffRoute staffAllowed={false}><AdminUsersPage /></StaffRoute>} />
         <Route path="/admin/gacha" element={<StaffRoute staffAllowed={false}><AdminGachaPage /></StaffRoute>} />
         <Route path="/admin/auth-errors" element={<StaffRoute staffAllowed={true}><AuthErrorsPage /></StaffRoute>} />
+        <Route path="/admin/booths" element={<StaffRoute staffAllowed={true}><AdminBoothsPage /></StaffRoute>} />
+        <Route path="/admin/events" element={<StaffRoute staffAllowed={true}><AdminEventsPage /></StaffRoute>} />
+        <Route path="/admin/radio" element={<StaffRoute staffAllowed={true}><AdminRadioPage /></StaffRoute>} />
       </Routes>
     </>
   )

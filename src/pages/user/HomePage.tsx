@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { collection, query, where, orderBy, getDocs, limit, doc, updateDoc, arrayUnion } from 'firebase/firestore'
+import { collection, query, where, orderBy, getDocs, limit, doc, setDoc, serverTimestamp, getDoc, onSnapshot } from 'firebase/firestore'
 import { animate, stagger } from 'animejs'
 import { db } from '@/lib/firebase'
 import AppHeader from '@/components/layout/AppHeader'
@@ -8,8 +8,17 @@ import { useAuth } from '@/contexts/AuthContext'
 import { PointRewardModal } from '@/components/ui/PointRewardModal'
 import { PageLoader, AnimatedNumber } from '@/components/ui/PageLoader'
 import { Spinner } from '@/components/ui/Spinner'
+import CountdownTimer from '@/components/ui/CountdownTimer'
 import { calculateLevel, getPointsToNextLevel, LEVEL_TITLES, LEVEL_COLORS } from '@/lib/levelSystem'
+import { CacheService } from '@/lib/cacheService'
 import type { Survey, Notification as NotificationType } from '@/types/firestore'
+
+interface FeatureToggles {
+  boothsEnabled: boolean
+  eventsEnabled: boolean
+  radioEnabled: boolean
+  executiveQAEnabled: boolean
+}
 
 type SurveyWithStatus = Survey & { id: string; isAnswered: boolean }
 type NotificationWithStatus = NotificationType & { id: string; isRead: boolean }
@@ -26,34 +35,89 @@ export default function HomePage() {
   const [missions, setMissions] = useState<SurveyWithStatus[]>([])
   const [loginBonusAvailable, setLoginBonusAvailable] = useState(false)
   const [claimingBonus, setClaimingBonus] = useState(false)
+  const [featureToggles, setFeatureToggles] = useState<FeatureToggles>({
+    boothsEnabled: false,
+    eventsEnabled: false,
+    radioEnabled: false,
+    executiveQAEnabled: false,
+  })
   const [notificationsLoading, setNotificationsLoading] = useState(true)
   const [tasksLoading, setTasksLoading] = useState(true)
   const [missionsLoading, setMissionsLoading] = useState(true)
+  const [totalUnreadCount, setTotalUnreadCount] = useState(0)
 
-  // Fetch notifications with server-side filtering (optimized)
+  // Subscribe to feature toggles
+  useEffect(() => {
+    const unsubscribe = onSnapshot(doc(db, 'config', 'featureToggles'), (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data() as FeatureToggles
+        setFeatureToggles({
+          boothsEnabled: data.boothsEnabled ?? false,
+          eventsEnabled: data.eventsEnabled ?? false,
+          radioEnabled: data.radioEnabled ?? false,
+          executiveQAEnabled: data.executiveQAEnabled ?? false,
+        })
+      }
+    })
+    return () => unsubscribe()
+  }, [])
+
+  // Fetch notifications with server-side filtering (optimized with subcollection)
   useEffect(() => {
     if (!currentUser || !userData) return
 
     const fetchNotifications = async () => {
       try {
+        console.log('[HomePage] Fetching notifications for role:', userData.role)
+        // Fetch notifications (limit to 10 for DB efficiency, covers most use cases)
         const notifQuery = query(
           collection(db, 'notifications'),
           where('targetRoles', 'array-contains', userData.role),
           orderBy('createdAt', 'desc'),
-          limit(3)
+          limit(10)
         )
         const notifSnap = await getDocs(notifQuery)
-        const notifList: NotificationWithStatus[] = notifSnap.docs.map((docSnap) => {
-          const data = docSnap.data() as NotificationType
-          return {
-            id: docSnap.id,
-            ...data,
-            isRead: data.readBy?.includes(currentUser.uid) || false,
+        console.log('[HomePage] Fetched', notifSnap.size, 'notifications')
+
+        // Check read status for each notification from subcollection
+        const notifList: NotificationWithStatus[] = await Promise.all(
+          notifSnap.docs.map(async (docSnap) => {
+            const data = docSnap.data() as NotificationType
+            const readStatusDoc = await getDoc(
+              doc(db, 'notifications', docSnap.id, 'readStatus', currentUser.uid)
+            )
+            const isRead = readStatusDoc.exists()
+
+            return {
+              id: docSnap.id,
+              ...data,
+              isRead,
+            }
+          })
+        )
+
+        // Count total unread
+        const unreadCount = notifList.filter(n => !n.isRead).length
+        setTotalUnreadCount(unreadCount)
+
+        // Sort: unread first, then by createdAt desc
+        const sortedList = [...notifList].sort((a, b) => {
+          // Unread comes first
+          if (a.isRead !== b.isRead) {
+            return a.isRead ? 1 : -1
           }
+          // Then sort by date (newest first)
+          const dateA = a.createdAt?.toDate?.() || new Date(0)
+          const dateB = b.createdAt?.toDate?.() || new Date(0)
+          return dateB.getTime() - dateA.getTime()
         })
-        setNotifications(notifList)
+
+        setNotifications(sortedList)
       } catch (error) {
-        console.error('Error fetching notifications:', error)
+        console.error('[HomePage] Error fetching notifications:', error)
+        if (error instanceof Error) {
+          console.error('[HomePage] Error details:', error.message)
+        }
       } finally {
         setNotificationsLoading(false)
       }
@@ -62,12 +126,25 @@ export default function HomePage() {
     fetchNotifications()
   }, [currentUser, userData])
 
-  // Fetch tasks and missions (shared surveyResponses fetch)
+  // Fetch tasks and missions (shared surveyResponses fetch) with caching
   useEffect(() => {
     if (!currentUser || !userData) return
 
     const fetchTasksAndMissions = async () => {
       try {
+        // Check cache first (5 minute expiration)
+        const cachedTasks = CacheService.get<SurveyWithStatus[]>('tasks')
+        const cachedMissions = CacheService.get<SurveyWithStatus[]>('missions')
+
+        if (cachedTasks && cachedMissions) {
+          setTasks(cachedTasks)
+          setMissions(cachedMissions)
+          setTasksLoading(false)
+          setMissionsLoading(false)
+          console.log('[HomePage] Loaded tasks/missions from cache')
+          return
+        }
+
         // Optimized: get answered survey IDs from user document (80% read reduction)
         let answeredIds = new Set<string>()
         if (userData?.answeredSurveyIds && Array.isArray(userData.answeredSurveyIds)) {
@@ -107,6 +184,7 @@ export default function HomePage() {
         })
         setTasks(taskList)
         setTasksLoading(false)
+        CacheService.set('tasks', taskList, 5 * 60 * 1000) // Cache for 5 minutes
 
         const missionList: SurveyWithStatus[] = []
         missionsSnap.forEach((docSnap) => {
@@ -115,6 +193,7 @@ export default function HomePage() {
         })
         setMissions(missionList)
         setMissionsLoading(false)
+        CacheService.set('missions', missionList, 5 * 60 * 1000) // Cache for 5 minutes
 
         // Check login bonus availability (JST date, matching Cloud Function logic)
         const now = new Date()
@@ -154,16 +233,27 @@ export default function HomePage() {
     }
   }
 
-  // Mark notification as read
+  // Mark notification as read (using subcollection for cost optimization)
   const markAsRead = async (notifId: string) => {
     if (!currentUser) return
+    // Check if already read
+    const notif = notifications.find(n => n.id === notifId)
+    if (notif?.isRead) return
+
     try {
-      await updateDoc(doc(db, 'notifications', notifId), {
-        readBy: arrayUnion(currentUser.uid)
-      })
+      // Set read status in subcollection
+      await setDoc(
+        doc(db, 'notifications', notifId, 'readStatus', currentUser.uid),
+        {
+          readAt: serverTimestamp(),
+          pointsClaimed: false
+        }
+      )
       setNotifications(prev => prev.map(n =>
         n.id === notifId ? { ...n, isRead: true } : n
       ))
+      // Update unread count
+      setTotalUnreadCount(prev => Math.max(0, prev - 1))
     } catch (error) {
       console.error('Error marking notification as read:', error)
     }
@@ -213,7 +303,6 @@ export default function HomePage() {
   }
 
   const isAdmin = userData.role === 'admin' || userData.role === 'staff'
-  const unreadNotifications = notifications.filter(n => !n.isRead).length
   const incompleteTasks = tasks.filter(t => !t.isAnswered).length
   const incompleteMissions = missions.filter(m => !m.isAnswered).length
 
@@ -235,6 +324,11 @@ export default function HomePage() {
         />
 
         <main ref={mainRef} className="max-w-lg mx-auto px-4 py-6 space-y-6">
+          {/* Countdown Timer */}
+          <div className="animate-card opacity-0">
+            <CountdownTimer variant="default" />
+          </div>
+
           {/* Admin Banner */}
           {isAdmin && (
             <Link to="/admin" className="block animate-card opacity-0">
@@ -260,24 +354,20 @@ export default function HomePage() {
 
           {/* Point Meter - Clickable */}
           <Link to="/point" className="block animate-card opacity-0">
-            <section className="card hover:ring-1 hover:ring-hatofes-accent-yellow transition-all relative overflow-hidden">
-              {/* Animated gradient background */}
-              <div className="absolute inset-0 bg-gradient-to-r from-hatofes-accent-yellow/5 via-transparent to-hatofes-accent-orange/5 animate-gradient-shift" />
+            <section className="card card-glow hover:ring-1 hover:ring-hatofes-accent-yellow transition-all">
+              <p className="text-lg text-hatofes-white text-center mb-3 font-bold">現在の鳩ポイント</p>
 
-              <div className="relative">
-                <p className="text-lg text-hatofes-white text-center mb-3 font-bold">現在の鳩ポイント</p>
-
-                {/* Orange gradient border box */}
-                <div
-                  className="rounded-lg p-4 mb-2"
-                  style={{
-                    background: 'linear-gradient(135deg, rgba(255,195,0,0.15), rgba(255,78,0,0.15))',
-                    border: '2px solid transparent',
-                    backgroundImage: 'linear-gradient(#1a1a2e, #1a1a2e), linear-gradient(135deg, #FFC300, #FF4E00)',
-                    backgroundOrigin: 'border-box',
-                    backgroundClip: 'padding-box, border-box',
-                  }}
-                >
+              {/* Orange gradient border box */}
+              <div
+                className="rounded-lg p-4 mb-2"
+                style={{
+                  background: 'linear-gradient(135deg, rgba(255,195,0,0.12), rgba(255,78,0,0.12))',
+                  border: '2px solid transparent',
+                  backgroundImage: 'linear-gradient(var(--color-bg-card), var(--color-bg-card)), linear-gradient(135deg, #FFC300, #FF4E00)',
+                  backgroundOrigin: 'border-box',
+                  backgroundClip: 'padding-box, border-box',
+                }}
+              >
                   <div className="flex items-baseline justify-center">
                     <span ref={pointRef} className="font-display text-5xl font-bold text-gradient">
                       <AnimatedNumber value={userData.totalPoints} duration={1200} />
@@ -286,13 +376,12 @@ export default function HomePage() {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between text-xs text-hatofes-gray">
-                  <span className="flex items-center gap-1">
-                    <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                    リアルタイム同期中
-                  </span>
-                  <span className="text-hatofes-accent-yellow font-display">Show More →</span>
-                </div>
+              <div className="flex items-center justify-between text-xs text-hatofes-gray">
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+                  リアルタイム同期中
+                </span>
+                <span className="text-hatofes-accent-yellow font-din tracking-wide">Show detail →</span>
               </div>
             </section>
           </Link>
@@ -332,7 +421,7 @@ export default function HomePage() {
                         {title}
                       </span>
                     </div>
-                    <span className="text-hatofes-gray text-xs font-display">Details →</span>
+                    <span className="text-hatofes-gray text-xs font-din tracking-wide">Show detail →</span>
                   </div>
                   {progress && (
                     <div className="w-full h-3 bg-hatofes-dark rounded-full overflow-hidden">
@@ -387,7 +476,7 @@ export default function HomePage() {
                   <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                     <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                   </svg>
-                  Claimed
+                  受取済み
                 </span>
               )}
             </button>
@@ -397,8 +486,8 @@ export default function HomePage() {
           <section className="card animate-card opacity-0">
             <div className="flex justify-between items-center mb-4">
               <h2 className="font-bold text-hatofes-white">新着通知</h2>
-              {unreadNotifications > 0 && (
-                <span className="notification-badge">{unreadNotifications}</span>
+              {totalUnreadCount > 0 && (
+                <span className="notification-badge">{totalUnreadCount}</span>
               )}
             </div>
 
@@ -436,8 +525,8 @@ export default function HomePage() {
             )}
 
             <Link to="/notifications" className="block mt-4">
-              <div className="w-full py-2.5 text-center text-sm rounded-lg border border-hatofes-gray text-hatofes-white hover:border-hatofes-accent-yellow hover:text-hatofes-accent-yellow transition-colors flex items-center justify-center gap-2 font-display">
-                Show More
+              <div className="w-full py-2.5 text-center text-sm rounded-lg border border-hatofes-gray text-hatofes-white hover:border-hatofes-accent-yellow hover:text-hatofes-accent-yellow transition-colors flex items-center justify-center gap-2 font-din tracking-wide">
+                Show more
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
@@ -462,26 +551,30 @@ export default function HomePage() {
               <div className="flex justify-center py-4"><Spinner size="md" /></div>
             ) : (
               <ul className="space-y-2">
-                {tasks.filter(t => !t.isAnswered).slice(0, 3).map((task) => (
-                  <li key={task.id}>
+                {tasks.slice(0, 5).map((task) => (
+                  <li key={task.id} className={task.isAnswered ? 'opacity-60' : ''}>
                     <Link
                       to={`/tasks/${task.id}`}
                       className="flex items-center justify-between py-2 px-2 -mx-2 rounded-lg hover:bg-hatofes-dark transition-colors"
                     >
-                      <span className="text-sm text-hatofes-white truncate flex-1">{task.title}</span>
-                      <span className="point-badge ml-2">{task.points}pt</span>
+                      <span className={`text-sm truncate flex-1 ${task.isAnswered ? 'text-hatofes-gray line-through' : 'text-hatofes-white'}`}>
+                        {task.title}
+                      </span>
+                      <span className={task.isAnswered ? 'text-hatofes-gray text-sm' : 'point-badge ml-2'}>
+                        {task.isAnswered ? `✓ ${task.points}pt` : `${task.points}pt`}
+                      </span>
                     </Link>
                   </li>
                 ))}
-                {tasks.filter(t => !t.isAnswered).length === 0 && (
-                  <li className="text-sm text-hatofes-gray text-center py-2">未完了のタスクはありません</li>
+                {tasks.length === 0 && (
+                  <li className="text-sm text-hatofes-gray text-center py-2">タスクはありません</li>
                 )}
               </ul>
             )}
 
             <Link to="/tasks" className="block mt-4">
-              <div className="w-full py-2.5 text-center text-sm rounded-lg border border-hatofes-gray text-hatofes-white hover:border-hatofes-accent-yellow hover:text-hatofes-accent-yellow transition-colors flex items-center justify-center gap-2 font-display">
-                Show More
+              <div className="w-full py-2.5 text-center text-sm rounded-lg border border-hatofes-gray text-hatofes-white hover:border-hatofes-accent-yellow hover:text-hatofes-accent-yellow transition-colors flex items-center justify-center gap-2 font-din tracking-wide">
+                Show more
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
@@ -506,26 +599,30 @@ export default function HomePage() {
               <div className="flex justify-center py-4"><Spinner size="md" /></div>
             ) : (
               <ul className="space-y-2">
-                {missions.filter(m => !m.isAnswered).slice(0, 3).map((mission) => (
-                  <li key={mission.id}>
+                {missions.slice(0, 5).map((mission) => (
+                  <li key={mission.id} className={mission.isAnswered ? 'opacity-60' : ''}>
                     <Link
                       to={`/missions/${mission.id}`}
                       className="flex items-center justify-between py-2 px-2 -mx-2 rounded-lg hover:bg-hatofes-dark transition-colors"
                     >
-                      <span className="text-sm text-hatofes-white truncate flex-1">{mission.title}</span>
-                      <span className="point-badge ml-2">{mission.points}pt</span>
+                      <span className={`text-sm truncate flex-1 ${mission.isAnswered ? 'text-hatofes-gray line-through' : 'text-hatofes-white'}`}>
+                        {mission.title}
+                      </span>
+                      <span className={mission.isAnswered ? 'text-hatofes-gray text-sm' : 'point-badge ml-2'}>
+                        {mission.isAnswered ? `✓ ${mission.points}pt` : `${mission.points}pt`}
+                      </span>
                     </Link>
                   </li>
                 ))}
-                {missions.filter(m => !m.isAnswered).length === 0 && (
-                  <li className="text-sm text-hatofes-gray text-center py-2">挑戦できるミッションはありません</li>
+                {missions.length === 0 && (
+                  <li className="text-sm text-hatofes-gray text-center py-2">ミッションはありません</li>
                 )}
               </ul>
             )}
 
             <Link to="/missions" className="block mt-4">
-              <div className="w-full py-2.5 text-center text-sm rounded-lg border border-hatofes-gray text-hatofes-white hover:border-hatofes-accent-yellow hover:text-hatofes-accent-yellow transition-colors flex items-center justify-center gap-2 font-display">
-                Show More
+              <div className="w-full py-2.5 text-center text-sm rounded-lg border border-hatofes-gray text-hatofes-white hover:border-hatofes-accent-yellow hover:text-hatofes-accent-yellow transition-colors flex items-center justify-center gap-2 font-din tracking-wide">
+                Show more
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
@@ -533,9 +630,53 @@ export default function HomePage() {
             </Link>
           </section>
 
+          {/* Festival Day Features - Conditional based on feature toggles */}
+          {(featureToggles.boothsEnabled || featureToggles.eventsEnabled) && (
+            <div className="grid grid-cols-2 gap-3">
+              {featureToggles.boothsEnabled && (
+                <Link to="/booths" className="card hover:ring-1 hover:ring-hatofes-accent-yellow transition-all">
+                  <div className="text-center py-2">
+                    <span className="text-3xl block mb-2">🏪</span>
+                    <p className="text-hatofes-white font-bold text-sm">ブース一覧</p>
+                    <p className="text-xs text-hatofes-gray">出展情報を見る</p>
+                  </div>
+                </Link>
+              )}
+              {featureToggles.eventsEnabled && (
+                <Link to="/events" className="card hover:ring-1 hover:ring-hatofes-accent-yellow transition-all">
+                  <div className="text-center py-2">
+                    <span className="text-3xl block mb-2">📅</span>
+                    <p className="text-hatofes-white font-bold text-sm">スケジュール</p>
+                    <p className="text-xs text-hatofes-gray">イベント情報</p>
+                  </div>
+                </Link>
+              )}
+            </div>
+          )}
+
+          {/* Radio Banner - Conditional */}
+          {featureToggles.radioEnabled && (
+            <Link to="/radio" className="block">
+              <section className="card hover:ring-1 hover:ring-red-500 transition-all bg-gradient-to-r from-red-500/10 to-orange-500/10 border-red-500/30">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="text-3xl">📻</span>
+                    <div>
+                      <p className="text-hatofes-white font-bold">鳩ラジ</p>
+                      <p className="text-xs text-hatofes-gray">校内ラジオを聴く</p>
+                    </div>
+                  </div>
+                  <svg className="w-5 h-5 text-hatofes-gray" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </div>
+              </section>
+            </Link>
+          )}
+
           {/* Gacha Banner */}
           <Link to="/gacha" className="block animate-card opacity-0">
-            <section className="card bg-gradient-to-r from-hatofes-accent-yellow/10 to-hatofes-accent-orange/10 border border-hatofes-accent-yellow/40 hover:border-hatofes-accent-yellow/70 transition-all hover:scale-[1.02]">
+            <section className="card hover:ring-1 hover:ring-hatofes-accent-yellow transition-all">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <span className="text-3xl">🎰</span>
@@ -544,17 +685,37 @@ export default function HomePage() {
                     <p className="text-xs text-hatofes-gray">チケット残数: <span className="text-hatofes-accent-yellow font-bold">{userData.gachaTickets ?? 0}枚</span></p>
                   </div>
                 </div>
-                <svg className="w-5 h-5 text-hatofes-accent-yellow" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-5 h-5 text-hatofes-gray" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
               </div>
             </section>
           </Link>
 
+          {/* Executive Q&A Banner - Conditional */}
+          {featureToggles.executiveQAEnabled && (
+            <Link to="/executive" className="block">
+              <section className="card hover:ring-1 hover:ring-purple-500 transition-all bg-gradient-to-r from-purple-500/10 to-indigo-500/10 border-purple-500/30">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="text-3xl">👑</span>
+                    <div>
+                      <p className="text-hatofes-white font-bold">三役Q&A</p>
+                      <p className="text-xs text-hatofes-gray">三役に質問しよう！</p>
+                    </div>
+                  </div>
+                  <svg className="w-5 h-5 text-hatofes-gray" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </div>
+              </section>
+            </Link>
+          )}
+
           {/* Tetris Banner - 教員以外のみ表示 */}
           {userData.role !== 'teacher' && (
             <Link to="/tetris" className="block animate-card opacity-0">
-              <section className="card bg-gradient-to-r from-blue-500/10 to-purple-500/10 border border-blue-500/40 hover:border-blue-500/70 transition-all hover:scale-[1.02]">
+              <section className="card hover:ring-1 hover:ring-hatofes-accent-yellow transition-all">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <span className="text-3xl">🧱</span>
@@ -563,7 +724,7 @@ export default function HomePage() {
                       <p className="text-xs text-hatofes-gray">行消しでポイント獲得</p>
                     </div>
                   </div>
-                  <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-5 h-5 text-hatofes-gray" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                   </svg>
                 </div>

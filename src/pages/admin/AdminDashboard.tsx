@@ -1,10 +1,14 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { collection, getDocs, query, orderBy, limit, doc, getDoc, writeBatch } from 'firebase/firestore'
+import { collection, getDocs, query, orderBy, limit, doc, getDoc, writeBatch, setDoc, Timestamp } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { useAuth } from '@/contexts/AuthContext'
 import { getFunctions, httpsCallable } from 'firebase/functions'
 import app from '@/lib/firebase'
+import {
+  PieChart, Pie, Cell, ResponsiveContainer,
+  BarChart, Bar, XAxis, YAxis, Tooltip, Legend
+} from 'recharts'
 
 const fns = getFunctions(app)
 const updateLoginBonusConfigFn = httpsCallable<
@@ -28,6 +32,12 @@ const listPrivilegedUsersFn = httpsCallable<void, {
   staff: Array<{ id: string; email: string; username: string }>;
   allowedAdminEmails: string[];
 }>(fns, 'listPrivilegedUsers')
+
+const resetTetrisRankingsFn = httpsCallable<void, {
+  success: boolean;
+  message: string;
+  deletedCount: number;
+}>(fns, 'resetTetrisRankings')
 
 interface DashboardStats {
   totalUsers: number
@@ -95,6 +105,34 @@ export default function AdminDashboard() {
     staff: Array<{ id: string; email: string; username: string }>;
   } | null>(null)
 
+  // Tetris ranking reset
+  const [tetrisResetLoading, setTetrisResetLoading] = useState(false)
+  const [tetrisResetMessage, setTetrisResetMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+
+  // Executive access config
+  const [executiveUserIds, setExecutiveUserIds] = useState<string[]>([])
+  const [executiveNames, setExecutiveNames] = useState<string[]>([])
+  const [newExecutiveId, setNewExecutiveId] = useState('')
+  const [newExecutiveName, setNewExecutiveName] = useState('')
+  const [executiveSaving, setExecutiveSaving] = useState(false)
+
+  // Feature toggles
+  const [featureToggles, setFeatureToggles] = useState({
+    boothsEnabled: false,
+    eventsEnabled: false,
+    radioEnabled: false,
+    executiveQAEnabled: false,
+  })
+  const [featureTogglesSaving, setFeatureTogglesSaving] = useState(false)
+
+  // Festival date config
+  const [festivalStartDate, setFestivalStartDate] = useState('')
+  const [festivalEndDate, setFestivalEndDate] = useState('')
+  const [festivalMessage, setFestivalMessage] = useState('')
+  const [countdownEnabled, setCountdownEnabled] = useState(false)
+  const [festivalUpdating, setFestivalUpdating] = useState(false)
+  const [festivalMessage2, setFestivalMessage2] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+
   useEffect(() => {
     const fetchStats = async () => {
       try {
@@ -153,6 +191,42 @@ export default function AdminDashboard() {
           const bonusData = bonusDoc.data()
           setLoginBonusPoints(bonusData.points ?? 10)
           setLoginBonusTickets(bonusData.tickets ?? 1)
+        }
+
+        // Fetch festival date config
+        const festivalDoc = await getDoc(doc(db, 'config', 'festivalDate'))
+        if (festivalDoc.exists()) {
+          const festivalData = festivalDoc.data()
+          if (festivalData.startDate) {
+            const start = festivalData.startDate.toDate()
+            setFestivalStartDate(start.toISOString().slice(0, 16))
+          }
+          if (festivalData.endDate) {
+            const end = festivalData.endDate.toDate()
+            setFestivalEndDate(end.toISOString().slice(0, 16))
+          }
+          setFestivalMessage(festivalData.message || '')
+          setCountdownEnabled(festivalData.countdownEnabled ?? false)
+        }
+
+        // Fetch feature toggles
+        const featureDoc = await getDoc(doc(db, 'config', 'featureToggles'))
+        if (featureDoc.exists()) {
+          const featureData = featureDoc.data()
+          setFeatureToggles({
+            boothsEnabled: featureData.boothsEnabled ?? false,
+            eventsEnabled: featureData.eventsEnabled ?? false,
+            radioEnabled: featureData.radioEnabled ?? false,
+            executiveQAEnabled: featureData.executiveQAEnabled ?? false,
+          })
+        }
+
+        // Fetch executive access config
+        const execDoc = await getDoc(doc(db, 'config', 'executiveAccess'))
+        if (execDoc.exists()) {
+          const execData = execDoc.data()
+          setExecutiveUserIds(execData.executiveUserIds || [])
+          setExecutiveNames(execData.executiveNames || [])
         }
 
         // Fetch point statistics from aggregate document (or calculate from limited sample)
@@ -220,6 +294,9 @@ export default function AdminDashboard() {
     { to: '/admin/notifications', label: '通知送信', icon: '🔔', desc: 'ユーザーへの通知を送信' },
     { to: '/admin/users', label: 'ユーザー管理', icon: '👥', desc: 'ユーザーの一覧・管理' },
     { to: '/admin/gacha', label: 'ガチャ管理', icon: '🎰', desc: 'アイテム・チケット配布' },
+    { to: '/admin/booths', label: 'ブース管理', icon: '🏪', desc: '出展ブースの登録・管理' },
+    { to: '/admin/events', label: 'イベント管理', icon: '📅', desc: 'スケジュールの登録・管理' },
+    { to: '/admin/radio', label: '鳩ラジ管理', icon: '📻', desc: 'ラジオ配信・リクエスト管理' },
   ]
 
   // Update login bonus config
@@ -278,6 +355,110 @@ export default function AdminDashboard() {
       alert('監査に失敗しました: ' + (error as Error).message)
     } finally {
       setAuditLoading(false)
+    }
+  }
+
+  // Reset tetris rankings
+  const handleResetTetrisRankings = async () => {
+    if (!confirm('本当にテトリスランキングを全てリセットしますか？この操作は取り消せません。')) return
+
+    setTetrisResetLoading(true)
+    setTetrisResetMessage(null)
+    try {
+      const result = await resetTetrisRankingsFn()
+      setTetrisResetMessage({ type: 'success', text: result.data.message })
+    } catch (error) {
+      console.error('Error resetting tetris rankings:', error)
+      setTetrisResetMessage({ type: 'error', text: 'リセットに失敗しました: ' + (error as Error).message })
+    } finally {
+      setTetrisResetLoading(false)
+    }
+  }
+
+  // Update feature toggles
+  const handleUpdateFeatureToggles = async () => {
+    setFeatureTogglesSaving(true)
+    try {
+      await setDoc(doc(db, 'config', 'featureToggles'), featureToggles)
+      alert('機能設定を保存しました')
+    } catch (error) {
+      console.error('Error updating feature toggles:', error)
+      alert('保存に失敗しました')
+    } finally {
+      setFeatureTogglesSaving(false)
+    }
+  }
+
+  // Add executive
+  const handleAddExecutive = () => {
+    if (!newExecutiveId.trim() || !newExecutiveName.trim()) {
+      alert('ユーザーIDと名前を入力してください')
+      return
+    }
+    if (executiveUserIds.includes(newExecutiveId.trim())) {
+      alert('このユーザーIDは既に登録されています')
+      return
+    }
+    setExecutiveUserIds([...executiveUserIds, newExecutiveId.trim()])
+    setExecutiveNames([...executiveNames, newExecutiveName.trim()])
+    setNewExecutiveId('')
+    setNewExecutiveName('')
+  }
+
+  // Remove executive
+  const handleRemoveExecutive = (index: number) => {
+    setExecutiveUserIds(executiveUserIds.filter((_, i) => i !== index))
+    setExecutiveNames(executiveNames.filter((_, i) => i !== index))
+  }
+
+  // Save executive access config
+  const handleSaveExecutiveAccess = async () => {
+    setExecutiveSaving(true)
+    try {
+      await setDoc(doc(db, 'config', 'executiveAccess'), {
+        executiveUserIds,
+        executiveNames,
+        lastUpdated: Timestamp.now(),
+      }, { merge: true })
+      alert('三役設定を保存しました')
+    } catch (error) {
+      console.error('Error saving executive access:', error)
+      alert('保存に失敗しました')
+    } finally {
+      setExecutiveSaving(false)
+    }
+  }
+
+  // Update festival date config
+  const handleUpdateFestivalDate = async () => {
+    if (!festivalStartDate || !festivalEndDate) {
+      setFestivalMessage2({ type: 'error', text: '開始日時と終了日時を入力してください' })
+      return
+    }
+
+    const startDate = new Date(festivalStartDate)
+    const endDate = new Date(festivalEndDate)
+
+    if (startDate >= endDate) {
+      setFestivalMessage2({ type: 'error', text: '終了日時は開始日時より後にしてください' })
+      return
+    }
+
+    setFestivalUpdating(true)
+    setFestivalMessage2(null)
+    try {
+      await setDoc(doc(db, 'config', 'festivalDate'), {
+        startDate: Timestamp.fromDate(startDate),
+        endDate: Timestamp.fromDate(endDate),
+        countdownEnabled,
+        message: festivalMessage || null,
+      })
+      setFestivalMessage2({ type: 'success', text: '鳩祭日程を更新しました' })
+    } catch (error) {
+      console.error('Error updating festival date:', error)
+      setFestivalMessage2({ type: 'error', text: '更新に失敗しました' })
+    } finally {
+      setFestivalUpdating(false)
     }
   }
 
@@ -462,6 +643,207 @@ export default function AdminDashboard() {
           </div>
         )}
 
+        {/* Festival Date Config (admin only) */}
+        {userData?.role === 'admin' && (
+          <div className="card mb-8 border-2 border-purple-500/30">
+            <h2 className="text-lg font-bold text-purple-400 mb-4 flex items-center gap-2">
+              <span>🎉</span> 鳩祭日程設定
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block text-sm text-hatofes-gray mb-2">開始日時</label>
+                <input
+                  type="datetime-local"
+                  value={festivalStartDate}
+                  onChange={e => setFestivalStartDate(e.target.value)}
+                  className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-4 py-2 text-hatofes-white"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-hatofes-gray mb-2">終了日時</label>
+                <input
+                  type="datetime-local"
+                  value={festivalEndDate}
+                  onChange={e => setFestivalEndDate(e.target.value)}
+                  className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-4 py-2 text-hatofes-white"
+                />
+              </div>
+            </div>
+            <div className="mb-4">
+              <label className="block text-sm text-hatofes-gray mb-2">カスタムメッセージ（任意）</label>
+              <input
+                type="text"
+                value={festivalMessage}
+                onChange={e => setFestivalMessage(e.target.value)}
+                placeholder="例: 今年も熱い2日間になるぞ!"
+                className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-4 py-2 text-hatofes-white"
+              />
+            </div>
+            <div className="mb-4">
+              <label className="flex items-center gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={countdownEnabled}
+                  onChange={e => setCountdownEnabled(e.target.checked)}
+                  className="w-5 h-5 rounded border-hatofes-gray bg-hatofes-dark text-hatofes-accent-yellow focus:ring-hatofes-accent-yellow"
+                />
+                <span className="text-hatofes-white text-sm">カウントダウンを表示する</span>
+              </label>
+            </div>
+            {festivalMessage2 && (
+              <div className={`mb-3 p-3 rounded-lg text-sm ${festivalMessage2.type === 'success' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                {festivalMessage2.text}
+              </div>
+            )}
+            <button
+              onClick={handleUpdateFestivalDate}
+              disabled={festivalUpdating}
+              className="btn-main w-full py-2 disabled:opacity-50"
+            >
+              {festivalUpdating ? '更新中...' : '日程を保存'}
+            </button>
+          </div>
+        )}
+
+        {/* Feature Toggles (admin only) */}
+        {userData?.role === 'admin' && (
+          <div className="card mb-8 border-2 border-cyan-500/30">
+            <h2 className="text-lg font-bold text-cyan-400 mb-4 flex items-center gap-2">
+              <span>🎚️</span> 機能ON/OFF設定
+            </h2>
+            <p className="text-xs text-hatofes-gray mb-4">
+              文化祭当日まで非表示にしておきたい機能を管理します
+            </p>
+            <div className="space-y-3 mb-4">
+              <label className="flex items-center justify-between p-3 bg-hatofes-dark rounded-lg cursor-pointer">
+                <div className="flex items-center gap-3">
+                  <span className="text-xl">🏪</span>
+                  <span className="text-hatofes-white text-sm">ブース一覧</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={featureToggles.boothsEnabled}
+                  onChange={e => setFeatureToggles({ ...featureToggles, boothsEnabled: e.target.checked })}
+                  className="w-5 h-5 rounded border-hatofes-gray bg-hatofes-dark text-cyan-500"
+                />
+              </label>
+              <label className="flex items-center justify-between p-3 bg-hatofes-dark rounded-lg cursor-pointer">
+                <div className="flex items-center gap-3">
+                  <span className="text-xl">📅</span>
+                  <span className="text-hatofes-white text-sm">イベントスケジュール</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={featureToggles.eventsEnabled}
+                  onChange={e => setFeatureToggles({ ...featureToggles, eventsEnabled: e.target.checked })}
+                  className="w-5 h-5 rounded border-hatofes-gray bg-hatofes-dark text-cyan-500"
+                />
+              </label>
+              <label className="flex items-center justify-between p-3 bg-hatofes-dark rounded-lg cursor-pointer">
+                <div className="flex items-center gap-3">
+                  <span className="text-xl">📻</span>
+                  <span className="text-hatofes-white text-sm">鳩ラジ</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={featureToggles.radioEnabled}
+                  onChange={e => setFeatureToggles({ ...featureToggles, radioEnabled: e.target.checked })}
+                  className="w-5 h-5 rounded border-hatofes-gray bg-hatofes-dark text-cyan-500"
+                />
+              </label>
+              <label className="flex items-center justify-between p-3 bg-hatofes-dark rounded-lg cursor-pointer">
+                <div className="flex items-center gap-3">
+                  <span className="text-xl">👑</span>
+                  <span className="text-hatofes-white text-sm">三役Q&Aコーナー</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={featureToggles.executiveQAEnabled}
+                  onChange={e => setFeatureToggles({ ...featureToggles, executiveQAEnabled: e.target.checked })}
+                  className="w-5 h-5 rounded border-hatofes-gray bg-hatofes-dark text-cyan-500"
+                />
+              </label>
+            </div>
+            <button
+              onClick={handleUpdateFeatureToggles}
+              disabled={featureTogglesSaving}
+              className="btn-main w-full py-2 disabled:opacity-50"
+            >
+              {featureTogglesSaving ? '保存中...' : '設定を保存'}
+            </button>
+          </div>
+        )}
+
+        {/* Executive Access Config (admin only) */}
+        {userData?.role === 'admin' && (
+          <div className="card mb-8 border-2 border-purple-500/30">
+            <h2 className="text-lg font-bold text-purple-400 mb-4 flex items-center gap-2">
+              <span>👑</span> 三役Q&A設定
+            </h2>
+            <p className="text-xs text-hatofes-gray mb-4">
+              三役Q&Aコーナーで回答できるユーザーを設定します（実行委員長1名＋副委員長2名）
+            </p>
+
+            {/* Current executives */}
+            <div className="space-y-2 mb-4">
+              {executiveUserIds.map((id, index) => (
+                <div key={id} className="flex items-center justify-between p-3 bg-hatofes-dark rounded-lg">
+                  <div>
+                    <p className="text-hatofes-white text-sm font-medium">{executiveNames[index] || '名前未設定'}</p>
+                    <p className="text-xs text-hatofes-gray">ID: {id}</p>
+                  </div>
+                  <button
+                    onClick={() => handleRemoveExecutive(index)}
+                    className="text-red-400 hover:text-red-300 text-sm"
+                  >
+                    削除
+                  </button>
+                </div>
+              ))}
+              {executiveUserIds.length === 0 && (
+                <p className="text-hatofes-gray text-sm text-center py-4">まだ三役が設定されていません</p>
+              )}
+            </div>
+
+            {/* Add new executive */}
+            <div className="border-t border-hatofes-gray pt-4">
+              <p className="text-sm text-hatofes-white mb-2">三役を追加</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                <input
+                  type="text"
+                  value={newExecutiveId}
+                  onChange={e => setNewExecutiveId(e.target.value)}
+                  placeholder="ユーザーID（UIDをコピペ）"
+                  className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white text-sm"
+                />
+                <input
+                  type="text"
+                  value={newExecutiveName}
+                  onChange={e => setNewExecutiveName(e.target.value)}
+                  placeholder="表示名（例: 委員長 山田太郎）"
+                  className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white text-sm"
+                />
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={handleAddExecutive}
+                  disabled={!newExecutiveId.trim() || !newExecutiveName.trim()}
+                  className="btn-sub py-2 px-4 text-sm disabled:opacity-50"
+                >
+                  追加
+                </button>
+                <button
+                  onClick={handleSaveExecutiveAccess}
+                  disabled={executiveSaving}
+                  className="btn-main py-2 px-4 text-sm disabled:opacity-50"
+                >
+                  {executiveSaving ? '保存中...' : '設定を保存'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Security Audit (admin only) */}
         {userData?.role === 'admin' && (
           <div className="card mb-8 border-2 border-red-500/30">
@@ -550,6 +932,42 @@ export default function AdminDashboard() {
                 )}
               </div>
             )}
+          </div>
+        )}
+
+        {/* System Management (admin only) */}
+        {userData?.role === 'admin' && (
+          <div className="card mb-8 border-2 border-orange-500/30">
+            <h2 className="text-lg font-bold text-orange-400 mb-4 flex items-center gap-2">
+              <span>⚙️</span> システム管理
+            </h2>
+
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-sm font-bold text-hatofes-white mb-2">テトリスランキング</h3>
+                <div className="mb-3 p-3 bg-orange-500/10 border border-orange-500/30 rounded-lg">
+                  <p className="text-sm text-orange-400">
+                    ⚠️ 全てのテトリスランキングをリセットします。この操作は取り消せません。
+                  </p>
+                </div>
+                <button
+                  onClick={handleResetTetrisRankings}
+                  disabled={tetrisResetLoading}
+                  className="btn-main py-2 px-4 bg-orange-600 hover:bg-orange-700 disabled:opacity-50"
+                >
+                  {tetrisResetLoading ? 'リセット中...' : '🧱 テトリスランキングをリセット'}
+                </button>
+                {tetrisResetMessage && (
+                  <div className={`mt-3 p-3 rounded-lg ${
+                    tetrisResetMessage.type === 'success'
+                      ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                      : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                  }`}>
+                    <p className="text-sm">{tetrisResetMessage.text}</p>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         )}
 
@@ -666,6 +1084,104 @@ export default function AdminDashboard() {
                   </div>
                 ))}
               </div>
+            )}
+          </div>
+        </div>
+
+        {/* Charts Section */}
+        <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* ポイント理由別内訳（円グラフ） */}
+          <div className="card">
+            <h2 className="text-lg font-bold text-hatofes-white mb-4 flex items-center gap-2">
+              <span>🥧</span> ポイント理由別内訳
+            </h2>
+            {Object.keys(pointStats.byReason).length === 0 ? (
+              <p className="text-hatofes-gray text-center py-8">データがありません</p>
+            ) : (
+              <ResponsiveContainer width="100%" height={250}>
+                <PieChart>
+                  <Pie
+                    data={Object.entries(pointStats.byReason)
+                      .filter(([, data]) => data.total > 0)
+                      .map(([reason, data]) => {
+                        const reasonLabels: Record<string, string> = {
+                          login_bonus: 'ログイン',
+                          survey: 'アンケート',
+                          admin_grant: '管理者付与',
+                          game_result: 'ゲーム',
+                        }
+                        return {
+                          name: reasonLabels[reason] || reason,
+                          value: data.total,
+                        }
+                      })}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={50}
+                    outerRadius={80}
+                    paddingAngle={2}
+                    dataKey="value"
+                    label={({ name, percent }: { name: string; percent: number }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                    labelLine={false}
+                  >
+                    {Object.entries(pointStats.byReason)
+                      .filter(([, data]) => data.total > 0)
+                      .map((_, index) => (
+                        <Cell
+                          key={`cell-${index}`}
+                          fill={['#FFD700', '#00d4ff', '#ff9f43', '#39d353', '#bf5fff', '#ff4757'][index % 6]}
+                        />
+                      ))}
+                  </Pie>
+                  <Tooltip
+                    formatter={(value: number) => [`${value.toLocaleString()} pt`, 'ポイント']}
+                    contentStyle={{ backgroundColor: '#1a1a2a', border: '1px solid #333', borderRadius: '8px' }}
+                    labelStyle={{ color: '#fff' }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+
+          {/* クラス別ポイント比較（棒グラフ） */}
+          <div className="card">
+            <h2 className="text-lg font-bold text-hatofes-white mb-4 flex items-center gap-2">
+              <span>📊</span> クラス別ポイント比較
+            </h2>
+            {topClasses.length === 0 ? (
+              <p className="text-hatofes-gray text-center py-8">データがありません</p>
+            ) : (
+              <ResponsiveContainer width="100%" height={250}>
+                <BarChart
+                  data={topClasses.map(cls => ({
+                    name: cls.id,
+                    points: cls.totalPoints,
+                  }))}
+                  layout="vertical"
+                  margin={{ top: 5, right: 30, left: 40, bottom: 5 }}
+                >
+                  <XAxis type="number" tickFormatter={(value: number) => value.toLocaleString()} stroke="#666" />
+                  <YAxis type="category" dataKey="name" stroke="#666" width={50} />
+                  <Tooltip
+                    formatter={(value: number) => [`${value.toLocaleString()} pt`, 'ポイント']}
+                    contentStyle={{ backgroundColor: '#1a1a2a', border: '1px solid #333', borderRadius: '8px' }}
+                    labelStyle={{ color: '#fff' }}
+                  />
+                  <Legend />
+                  <Bar
+                    dataKey="points"
+                    name="クラスポイント"
+                    fill="url(#colorGradient)"
+                    radius={[0, 4, 4, 0]}
+                  />
+                  <defs>
+                    <linearGradient id="colorGradient" x1="0" y1="0" x2="1" y2="0">
+                      <stop offset="0%" stopColor="#FFD700" />
+                      <stop offset="100%" stopColor="#ff9f43" />
+                    </linearGradient>
+                  </defs>
+                </BarChart>
+              </ResponsiveContainer>
             )}
           </div>
         </div>

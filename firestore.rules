@@ -150,16 +150,28 @@ service cloud.firestore {
       // Admin/staff can write anything
       allow create, delete: if isAdminOrStaff();
 
-      // For updates: admin/staff can update anything, regular users can only update readBy
+      // For updates: admin/staff can update anything, regular users can only update readBy or readCount
       allow update: if isAdminOrStaff() || (
         isSignedIn() && isValidDomain() &&
-        // Only readBy field is changed
+        // Only readBy field is changed (legacy support)
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readBy']) &&
         // User is adding their own UID
         request.resource.data.readBy.hasAll(resource.data.readBy) &&
         request.resource.data.readBy.size() == resource.data.readBy.size() + 1 &&
         request.auth.uid in request.resource.data.readBy
       );
+
+      // readStatus subcollection - stores per-user read status for cost optimization
+      match /readStatus/{userId} {
+        // Users can read their own status
+        allow read: if isSignedIn() && isValidDomain() && request.auth.uid == userId;
+
+        // Users can create/update their own status
+        allow create, update: if isSignedIn() && isValidDomain() && request.auth.uid == userId;
+
+        // Only admins can delete
+        allow delete: if isAdmin();
+      }
     }
 
     // Tetris scores collection (ランキング用)
@@ -196,6 +208,94 @@ service cloud.firestore {
 
       // Only admins can read audit logs
       allow read: if isAdmin();
+    }
+
+    // Booths collection (for festival day)
+    match /booths/{boothId} {
+      // Anyone authenticated can read active booths
+      allow read: if isSignedIn() && isValidDomain();
+
+      // Only admin/staff can write
+      allow write: if isAdminOrStaff();
+    }
+
+    // Events collection (for event schedule)
+    match /events/{eventId} {
+      // Anyone authenticated can read
+      allow read: if isSignedIn() && isValidDomain();
+
+      // Only admin/staff can write
+      allow write: if isAdminOrStaff();
+    }
+
+    // Stamp rally entries
+    match /stampRally/{entryId} {
+      // Users can read their own entries; admin/staff can read all
+      allow read: if isSignedIn() && isValidDomain() &&
+        (resource.data.userId == request.auth.uid || isAdminOrStaff());
+
+      // Write is denied from client — Cloud Functions only
+      allow write: if false;
+    }
+
+    // Radio config (for Hato Radio)
+    match /radioConfig/{configId} {
+      allow read: if isSignedIn() && isValidDomain();
+      allow write: if isAdminOrStaff();
+    }
+
+    // Radio programs
+    match /radioPrograms/{programId} {
+      allow read: if isSignedIn() && isValidDomain();
+      allow write: if isAdminOrStaff();
+    }
+
+    // Radio requests
+    match /radioRequests/{requestId} {
+      allow read: if isSignedIn() && isValidDomain() &&
+        (resource.data.userId == request.auth.uid || isAdminOrStaff());
+      allow create: if isSignedIn() && isValidDomain();
+      allow update, delete: if isAdminOrStaff();
+    }
+
+    // Executive Q&A collection (三役Q&Aコーナー)
+    match /executiveQA/{questionId} {
+      // Anyone authenticated can read
+      allow read: if isSignedIn() && isValidDomain();
+
+      // Anyone authenticated can create questions
+      allow create: if isSignedIn() && isValidDomain();
+
+      // Users can update likes; executives/admins can update anything
+      allow update: if isSignedIn() && isValidDomain() && (
+        // Regular users can only update likes/likedBy
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'likedBy'])) ||
+        // Executives (check by config) or admins can update anything
+        isAdmin() ||
+        (exists(/databases/$(database)/documents/config/executiveAccess) &&
+         request.auth.uid in get(/databases/$(database)/documents/config/executiveAccess).data.executiveUserIds)
+      );
+
+      // Only executives or admins can delete
+      allow delete: if isAdmin() ||
+        (isSignedIn() && isValidDomain() &&
+         exists(/databases/$(database)/documents/config/executiveAccess) &&
+         request.auth.uid in get(/databases/$(database)/documents/config/executiveAccess).data.executiveUserIds);
+    }
+
+    // Point aggregations collection (日次集計 - Cloud Functions only)
+    match /pointAggregations/{userId} {
+      // Users can read their own aggregations; admin/staff can read all
+      allow read: if isSignedIn() && isValidDomain() && (userId == request.auth.uid || isAdminOrStaff());
+
+      // Write is denied from client — Cloud Functions only
+      allow write: if false;
+
+      // Daily subcollection
+      match /daily/{dateId} {
+        allow read: if isSignedIn() && isValidDomain() && (userId == request.auth.uid || isAdminOrStaff());
+        allow write: if false;
+      }
     }
   }
 }

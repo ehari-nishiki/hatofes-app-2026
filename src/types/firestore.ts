@@ -55,6 +55,7 @@ export interface Class {
   className: string; // A-H
   totalPoints: number;
   memberCount: number;
+  memberIds?: string[]; // Array of user IDs for efficient member lookup (cost optimization)
 }
 
 // Survey question types
@@ -129,10 +130,17 @@ export interface Notification {
   createdAt: Timestamp;
   createdBy?: string; // User ID of creator
   senderName?: string; // Display name of sender (realName or username)
-  readBy: string[]; // Array of user IDs who have read
+  readCount: number; // Count of users who have read (replaces readBy array for cost optimization)
+  readBy?: string[]; // DEPRECATED: Legacy field, use readStatus subcollection instead
   imageUrl?: string;
   points?: number; // 通知を開いた時に付与するポイント（0または未設定 = 付与なし）
   pointsReceivedBy?: string[]; // ポイントを受け取ったユーザーIDの配列
+}
+
+// Notification read status (stored in subcollection: notifications/{notifId}/readStatus/{userId})
+export interface NotificationReadStatus {
+  readAt: Timestamp;
+  pointsClaimed: boolean; // Whether the user has claimed points from this notification
 }
 
 // Gacha item types
@@ -184,4 +192,152 @@ export interface TetrisScore {
   maxLines: number; // 最高消し行数
   totalGames: number; // プレイ回数
   lastPlayedAt: Timestamp;
+}
+
+// Festival date config (for countdown)
+export interface FestivalDateConfig {
+  startDate: Timestamp;
+  endDate: Timestamp;
+  countdownEnabled: boolean;
+  message?: string;
+}
+
+// Booth document (for booth list on festival day)
+export type BoothCategory = 'food' | 'game' | 'exhibition' | 'stage' | 'other';
+
+export interface Booth {
+  id?: string;
+  name: string;
+  classId: string; // "2-A" etc
+  location: string;
+  floor?: number;
+  description?: string;
+  category: BoothCategory;
+  imageUrl?: string;
+  stampCode?: string; // QR code identifier for stamp rally
+  points?: number; // Points awarded for visiting (stamp rally)
+  isActive: boolean;
+  createdAt: Timestamp;
+  createdBy: string;
+}
+
+// Event document (for event schedule)
+export type EventCategory = 'stage' | 'exhibition' | 'food' | 'game' | 'ceremony' | 'other';
+
+export interface FestivalEvent {
+  id?: string;
+  title: string;
+  description?: string;
+  location: string;
+  category: EventCategory;
+  startTime: Timestamp;
+  endTime: Timestamp;
+  isHighlight?: boolean;
+  createdAt: Timestamp;
+  createdBy: string;
+}
+
+// Stamp rally entry
+export interface StampRallyEntry {
+  id?: string;
+  userId: string;
+  boothId: string;
+  visitedAt: Timestamp;
+  pointsAwarded: number;
+}
+
+// Radio config (for Hato Radio)
+export interface RadioConfig {
+  isLive: boolean;
+  currentStreamUrl: string;
+  streamType: 'youtube' | 'external' | 'archive';
+  announcement?: string;
+  requestsEnabled: boolean;
+}
+
+// Radio program
+export interface RadioProgram {
+  id?: string;
+  title: string;
+  hosts: string[];
+  description?: string;
+  scheduledStart: Timestamp;
+  scheduledEnd: Timestamp;
+  streamUrl?: string;
+  isLive?: boolean;
+}
+
+// Radio request
+export type RadioRequestStatus = 'pending' | 'approved' | 'played' | 'rejected';
+
+export interface RadioRequest {
+  id?: string;
+  userId: string;
+  username: string;
+  songTitle: string;
+  artist?: string;
+  message?: string;
+  status: RadioRequestStatus;
+  createdAt: Timestamp;
+}
+
+// Executive Q&A config
+export interface ExecutiveConfig {
+  executiveUserIds: string[]; // User IDs of executives (1 chair + 2 vice chairs)
+  executiveNames?: string[]; // Display names for executives
+  meetingNotes?: string;
+  lastUpdated?: Timestamp;
+}
+
+// Executive Q&A question
+export interface ExecutiveQuestion {
+  id?: string;
+  question: string;
+  submittedBy: string;
+  submittedByName: string;
+  submittedAt: Timestamp;
+  answer?: string;
+  answeredBy?: string;
+  answeredByName?: string;
+  answeredAt?: Timestamp;
+  isPinned?: boolean;
+  likes: number;
+  likedBy: string[];
+  status: 'pending' | 'answered';
+}
+
+// Extended question types for surveys
+export type ExtendedQuestionType =
+  | 'multiple_choice'
+  | 'text'
+  | 'rating'
+  | 'image_choice'
+  | 'slider'
+  | 'ranking'
+  | 'checkbox'
+  | 'long_text'
+  | 'datetime';
+
+// Extended question interface
+export interface ExtendedQuestion {
+  id: string;
+  type: ExtendedQuestionType;
+  question: string;
+  required: boolean;
+  options?: string[]; // For multiple_choice, checkbox
+  imageOptions?: Array<{ url: string; label: string }>; // For image_choice
+  imageUrl?: string;
+  minRating?: number; // For rating
+  maxRating?: number; // For rating
+  minValue?: number; // For slider
+  maxValue?: number; // For slider
+  step?: number; // For slider
+  rankingItems?: string[]; // For ranking
+  maxLength?: number; // For text/long_text
+  placeholder?: string;
+  // Conditional logic
+  showIf?: {
+    questionId: string;
+    value: string | number;
+  };
 }
