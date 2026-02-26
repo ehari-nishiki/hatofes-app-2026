@@ -11,6 +11,8 @@ import { Spinner } from '@/components/ui/Spinner'
 import CountdownTimer from '@/components/ui/CountdownTimer'
 import { calculateLevel, getPointsToNextLevel, LEVEL_TITLES, LEVEL_COLORS } from '@/lib/levelSystem'
 import { CacheService } from '@/lib/cacheService'
+import { TetrisIcon, GachaIcon, RadioIcon, QAIcon, ChevronRightIcon as ChevronIcon, BellIcon, TaskIcon, MissionIcon } from '@/components/ui/Icon'
+import { ViewMoreButton, PointBadge } from '@/components/ui/Button'
 import type { Survey, Notification as NotificationType } from '@/types/firestore'
 
 interface FeatureToggles {
@@ -485,7 +487,10 @@ export default function HomePage() {
           {/* Notifications */}
           <section className="card animate-card opacity-0">
             <div className="flex justify-between items-center mb-4">
-              <h2 className="font-bold text-hatofes-white">新着通知</h2>
+              <div className="flex items-center gap-2">
+                <BellIcon size={20} />
+                <h2 className="font-bold text-hatofes-white">新着通知</h2>
+              </div>
               {totalUnreadCount > 0 && (
                 <span className="notification-badge">{totalUnreadCount}</span>
               )}
@@ -517,28 +522,21 @@ export default function HomePage() {
                           <p className="text-xs text-hatofes-gray mt-0.5 ml-4 font-display">by {item.senderName}</p>
                         )}
                       </div>
-                      <ChevronRightIcon />
+                      <ChevronIcon size={16} color="#6B7280" />
                     </Link>
                   </li>
                 ))}
               </ul>
             )}
 
-            <Link to="/notifications" className="block mt-4">
-              <div className="w-full py-2.5 text-center text-sm rounded-lg border border-hatofes-gray text-hatofes-white hover:border-hatofes-accent-yellow hover:text-hatofes-accent-yellow transition-colors flex items-center justify-center gap-2 font-din tracking-wide">
-                Show more
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-              </div>
-            </Link>
+            <ViewMoreButton to="/notifications" />
           </section>
 
           {/* Tasks Section */}
           <section className="card animate-card opacity-0">
             <div className="flex justify-between items-center mb-4">
               <div className="flex items-center gap-2">
-                <span className="w-3 h-3 rounded-full" style={{ background: 'linear-gradient(135deg, #FFC300, #FF4E00)' }}></span>
+                <TaskIcon size={20} />
                 <h2 className="font-bold text-hatofes-white font-display">Task</h2>
               </div>
               {incompleteTasks > 0 && (
@@ -560,9 +558,7 @@ export default function HomePage() {
                       <span className={`text-sm truncate flex-1 ${task.isAnswered ? 'text-hatofes-gray line-through' : 'text-hatofes-white'}`}>
                         {task.title}
                       </span>
-                      <span className={task.isAnswered ? 'text-hatofes-gray text-sm' : 'point-badge ml-2'}>
-                        {task.isAnswered ? `✓ ${task.points}pt` : `${task.points}pt`}
-                      </span>
+                      <PointBadge points={task.points} completed={task.isAnswered} size="sm" />
                     </Link>
                   </li>
                 ))}
@@ -572,21 +568,14 @@ export default function HomePage() {
               </ul>
             )}
 
-            <Link to="/tasks" className="block mt-4">
-              <div className="w-full py-2.5 text-center text-sm rounded-lg border border-hatofes-gray text-hatofes-white hover:border-hatofes-accent-yellow hover:text-hatofes-accent-yellow transition-colors flex items-center justify-center gap-2 font-din tracking-wide">
-                Show more
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-              </div>
-            </Link>
+            <ViewMoreButton to="/tasks" />
           </section>
 
           {/* Missions Section */}
           <section className="card animate-card opacity-0">
             <div className="flex justify-between items-center mb-4">
               <div className="flex items-center gap-2">
-                <span className="w-3 h-3 rounded-full" style={{ background: 'linear-gradient(135deg, #FFC300, #FF4E00)' }}></span>
+                <MissionIcon size={20} />
                 <h2 className="font-bold text-hatofes-white font-display">Mission</h2>
               </div>
               {incompleteMissions > 0 && (
@@ -608,9 +597,7 @@ export default function HomePage() {
                       <span className={`text-sm truncate flex-1 ${mission.isAnswered ? 'text-hatofes-gray line-through' : 'text-hatofes-white'}`}>
                         {mission.title}
                       </span>
-                      <span className={mission.isAnswered ? 'text-hatofes-gray text-sm' : 'point-badge ml-2'}>
-                        {mission.isAnswered ? `✓ ${mission.points}pt` : `${mission.points}pt`}
-                      </span>
+                      <PointBadge points={mission.points} completed={mission.isAnswered} size="sm" />
                     </Link>
                   </li>
                 ))}
@@ -620,14 +607,7 @@ export default function HomePage() {
               </ul>
             )}
 
-            <Link to="/missions" className="block mt-4">
-              <div className="w-full py-2.5 text-center text-sm rounded-lg border border-hatofes-gray text-hatofes-white hover:border-hatofes-accent-yellow hover:text-hatofes-accent-yellow transition-colors flex items-center justify-center gap-2 font-din tracking-wide">
-                Show more
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-              </div>
-            </Link>
+            <ViewMoreButton to="/missions" />
           </section>
 
           {/* Festival Day Features - Conditional based on feature toggles */}
@@ -660,15 +640,15 @@ export default function HomePage() {
               <section className="card hover:ring-1 hover:ring-red-500 transition-all bg-gradient-to-r from-red-500/10 to-orange-500/10 border-red-500/30">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <span className="text-3xl">📻</span>
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(239, 68, 68, 0.15)' }}>
+                      <RadioIcon size={28} gradient={false} color="#EF4444" />
+                    </div>
                     <div>
                       <p className="text-hatofes-white font-bold">鳩ラジ</p>
                       <p className="text-xs text-hatofes-gray">校内ラジオを聴く</p>
                     </div>
                   </div>
-                  <svg className="w-5 h-5 text-hatofes-gray" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
+                  <ChevronIcon size={20} color="#6B7280" />
                 </div>
               </section>
             </Link>
@@ -679,15 +659,15 @@ export default function HomePage() {
             <section className="card hover:ring-1 hover:ring-hatofes-accent-yellow transition-all">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <span className="text-3xl">🎰</span>
+                  <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(255, 195, 0, 0.1)' }}>
+                    <GachaIcon size={28} />
+                  </div>
                   <div>
                     <p className="text-hatofes-white font-bold">ガチャガチャ</p>
                     <p className="text-xs text-hatofes-gray">チケット残数: <span className="text-hatofes-accent-yellow font-bold">{userData.gachaTickets ?? 0}枚</span></p>
                   </div>
                 </div>
-                <svg className="w-5 h-5 text-hatofes-gray" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
+                <ChevronIcon size={20} color="#6B7280" />
               </div>
             </section>
           </Link>
@@ -698,15 +678,15 @@ export default function HomePage() {
               <section className="card hover:ring-1 hover:ring-purple-500 transition-all bg-gradient-to-r from-purple-500/10 to-indigo-500/10 border-purple-500/30">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <span className="text-3xl">👑</span>
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(168, 85, 247, 0.15)' }}>
+                      <QAIcon size={28} gradient={false} color="#A855F7" />
+                    </div>
                     <div>
                       <p className="text-hatofes-white font-bold">三役Q&A</p>
                       <p className="text-xs text-hatofes-gray">三役に質問しよう！</p>
                     </div>
                   </div>
-                  <svg className="w-5 h-5 text-hatofes-gray" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
+                  <ChevronIcon size={20} color="#6B7280" />
                 </div>
               </section>
             </Link>
@@ -718,15 +698,15 @@ export default function HomePage() {
               <section className="card hover:ring-1 hover:ring-hatofes-accent-yellow transition-all">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <span className="text-3xl">🧱</span>
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(255, 195, 0, 0.1)' }}>
+                      <TetrisIcon size={28} />
+                    </div>
                     <div>
                       <p className="text-hatofes-white font-bold">テトリス</p>
                       <p className="text-xs text-hatofes-gray">行消しでポイント獲得</p>
                     </div>
                   </div>
-                  <svg className="w-5 h-5 text-hatofes-gray" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
+                  <ChevronIcon size={20} color="#6B7280" />
                 </div>
               </section>
             </Link>
@@ -736,14 +716,6 @@ export default function HomePage() {
         </main>
       </div>
     </>
-  )
-}
-
-function ChevronRightIcon() {
-  return (
-    <svg className="w-4 h-4 text-hatofes-gray flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M9 18l6-6-6-6" />
-    </svg>
   )
 }
 
