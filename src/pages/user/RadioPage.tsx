@@ -17,6 +17,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import AppHeader from '@/components/layout/AppHeader'
 import RadioPlayer from '@/components/radio/RadioPlayer'
 import { Spinner } from '@/components/ui/Spinner'
+import { RadioIcon } from '@/components/ui/Icon'
 import type { RadioConfig, RadioProgram, RadioRequest } from '@/types/firestore'
 
 type ProgramWithId = RadioProgram & { id: string }
@@ -198,7 +199,7 @@ export default function RadioPage() {
           </Link>
           <div>
             <h1 className="text-xl font-bold text-hatofes-white font-display flex items-center gap-2">
-              <span>📻</span> 鳩ラジ
+              <RadioIcon size={24} gradient={false} color="#EF4444" /> 鳩ラジ
             </h1>
             <p className="text-xs text-hatofes-gray">Hato Radio</p>
           </div>
@@ -212,7 +213,8 @@ export default function RadioPage() {
           <section className="mt-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-bold text-hatofes-white flex items-center gap-2">
-                <span>🎵</span> リクエスト
+                <svg className="w-5 h-5 text-hatofes-accent-yellow" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+                リクエスト
               </h2>
               <button
                 onClick={() => setShowRequestForm(!showRequestForm)}
@@ -312,7 +314,8 @@ export default function RadioPage() {
         {/* Program Schedule */}
         <section className="mt-6">
           <h2 className="text-lg font-bold text-hatofes-white mb-4 flex items-center gap-2">
-            <span>📅</span> 番組表
+            <svg className="w-5 h-5 text-hatofes-accent-yellow" viewBox="0 0 24 24" fill="currentColor"><path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V9h14v11zM9 11H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2zm-8 4H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2z"/></svg>
+            番組表
           </h2>
 
           {programs.length === 0 ? (

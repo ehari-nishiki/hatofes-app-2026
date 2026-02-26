@@ -4,6 +4,7 @@ import { doc, getDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import AppHeader from '@/components/layout/AppHeader'
 import { useAuth } from '@/contexts/AuthContext'
+import { CacheService } from '@/lib/cacheService'
 
 interface RankedUser {
   id: string
@@ -34,7 +35,23 @@ export default function RankingPage() {
   useEffect(() => {
     const fetchRankings = async () => {
       try {
-        // Use cached ranking data (90% read reduction)
+        // Check localStorage cache first (10 minute expiration)
+        const cachedIndividual = CacheService.get<RankedUser[]>('ranking_individual')
+        const cachedClass = CacheService.get<ClassRanking[]>('ranking_class')
+        const cachedUserRank = CacheService.get<number>('ranking_user_rank')
+
+        if (cachedIndividual && cachedClass) {
+          setIndividualRanking(cachedIndividual)
+          setClassRanking(cachedClass)
+          if (cachedUserRank !== null) {
+            setUserRank(cachedUserRank)
+          }
+          setLoading(false)
+          console.log('[RankingPage] Loaded rankings from localStorage cache')
+          return
+        }
+
+        // Use cached ranking data from Firestore (90% read reduction)
         const personalRankingDoc = await getDoc(doc(db, 'config', 'personalRanking'))
         const classRankingDoc = await getDoc(doc(db, 'config', 'classRanking'))
 
@@ -52,12 +69,14 @@ export default function RankingPage() {
           }))
 
           setIndividualRanking(userList)
+          CacheService.set('ranking_individual', userList, 10 * 60 * 1000) // Cache for 10 minutes
 
           // Find current user's rank
           if (currentUser) {
             const userInRanking = cachedRankings.find((item: any) => item.userId === currentUser.uid)
             if (userInRanking) {
               setUserRank(userInRanking.rank)
+              CacheService.set('ranking_user_rank', userInRanking.rank, 10 * 60 * 1000)
             }
           }
         }
@@ -76,6 +95,7 @@ export default function RankingPage() {
           }))
 
           setClassRanking(classRankList)
+          CacheService.set('ranking_class', classRankList, 10 * 60 * 1000) // Cache for 10 minutes
         }
       } catch (error) {
         console.error('Error fetching rankings:', error)

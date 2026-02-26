@@ -94,9 +94,8 @@ export function ViewMoreButton({ to, className = '' }: ViewMoreButtonProps) {
     <Link
       to={to}
       className={`
-        flex items-center justify-center gap-2 py-3
+        flex items-center justify-center gap-2 py-3 mt-2
         text-hatofes-gray hover:text-hatofes-white
-        border-t border-hatofes-gray/20
         transition-colors
         ${className}
       `}

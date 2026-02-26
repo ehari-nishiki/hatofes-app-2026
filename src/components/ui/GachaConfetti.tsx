@@ -11,14 +11,17 @@ const PALETTES: Record<GachaRarity, string[]> = {
 }
 
 const SPAWN_PER_FRAME: Record<GachaRarity, number> = {
-  common: 2, uncommon: 3, rare: 4, epic: 6, legendary: 8,
+  common: 2, uncommon: 3, rare: 4, epic: 5, legendary: 6,
 }
 
 const SPAWN_MS: Record<GachaRarity, number> = {
-  common: 1000, uncommon: 1200, rare: 1500, epic: 2000, legendary: 2500,
+  common: 800, uncommon: 1000, rare: 1200, epic: 1600, legendary: 2000,
 }
 
-const PARTICLE_LIFE = 1600
+const PARTICLE_LIFE = 2000
+
+// Confetti shapes
+type ConfettiShape = 'rect' | 'circle' | 'ribbon'
 
 class ConfettiParticle {
   x: number
@@ -30,8 +33,13 @@ class ConfettiParticle {
   spin: number
   spinSpeed: number
   size: number
+  wobble: number
+  wobbleSpeed: number
+  shape: ConfettiShape
+  opacity: number
+  drift: number
 
-  constructor(x: number, y: number, vx: number, vy: number, color: string) {
+  constructor(x: number, y: number, vx: number, vy: number, color: string, canvasWidth: number) {
     this.x = x
     this.y = y
     this.vx = vx
@@ -39,37 +47,75 @@ class ConfettiParticle {
     this.color = color
     this.life = 0
     this.spin = Math.random() * Math.PI * 2
-    this.spinSpeed = 2 + Math.random() * 4
-    this.size = 7 + Math.random() * 5
+    this.spinSpeed = (Math.random() - 0.5) * 0.15
+    this.size = 6 + Math.random() * 6
+    this.wobble = Math.random() * Math.PI * 2
+    this.wobbleSpeed = 0.03 + Math.random() * 0.04
+    this.shape = (['rect', 'rect', 'circle', 'ribbon'] as ConfettiShape[])[Math.floor(Math.random() * 4)]
+    this.opacity = 1
+    // Drift towards center of screen for more natural look
+    this.drift = (canvasWidth / 2 - x) * 0.0003
   }
 
   update() {
-    this.spin += this.spinSpeed * 0.025
-    this.vx *= 0.995
-    this.vy = this.vy * 0.999 + 0.07
-    this.x += this.vx + Math.sin(this.life * 0.06) * 0.4
+    this.spin += this.spinSpeed
+    this.wobble += this.wobbleSpeed
+
+    // Air resistance
+    this.vx *= 0.99
+    this.vy *= 0.995
+
+    // Gravity (gentler)
+    this.vy += 0.03
+
+    // Horizontal wobble (like real paper falling)
+    const wobbleX = Math.sin(this.wobble) * 0.8
+
+    // Slight drift
+    this.vx += this.drift
+
+    this.x += this.vx + wobbleX
     this.y += this.vy
     this.life++
+
+    // Fade out near end
+    if (this.life > PARTICLE_LIFE - 500) {
+      this.opacity = (PARTICLE_LIFE - this.life) / 500
+    }
   }
 
   draw(ctx: CanvasRenderingContext2D) {
-    let alpha = 1
-    if (this.life > PARTICLE_LIFE - 400) {
-      alpha = (PARTICLE_LIFE - this.life) / 400
+    ctx.globalAlpha = this.opacity
+
+    ctx.save()
+    ctx.translate(this.x, this.y)
+    ctx.rotate(this.spin)
+
+    // 3D-like rotation effect using scale
+    const scaleY = Math.cos(this.wobble * 2) * 0.5 + 0.5
+    ctx.scale(1, Math.max(0.2, scaleY))
+
+    ctx.fillStyle = this.color
+
+    switch (this.shape) {
+      case 'rect':
+        ctx.fillRect(-this.size / 2, -this.size / 4, this.size, this.size / 2)
+        break
+      case 'circle':
+        ctx.beginPath()
+        ctx.arc(0, 0, this.size / 3, 0, Math.PI * 2)
+        ctx.fill()
+        break
+      case 'ribbon':
+        ctx.beginPath()
+        ctx.moveTo(-this.size / 2, 0)
+        ctx.quadraticCurveTo(0, -this.size / 3, this.size / 2, 0)
+        ctx.quadraticCurveTo(0, this.size / 3, -this.size / 2, 0)
+        ctx.fill()
+        break
     }
 
-    const w = this.size
-    const h = Math.cos(this.spin) * this.size * 0.85
-
-    ctx.globalAlpha = alpha
-    ctx.fillStyle = this.color
-    ctx.beginPath()
-    ctx.moveTo(this.x, this.y)
-    ctx.lineTo(this.x + w * 0.4, this.y + h)
-    ctx.lineTo(this.x + w + w * 0.4, this.y + h)
-    ctx.lineTo(this.x + w, this.y)
-    ctx.closePath()
-    ctx.fill()
+    ctx.restore()
     ctx.globalAlpha = 1
   }
 }
@@ -116,22 +162,32 @@ export function GachaConfetti({ active, rarity }: GachaConfettiProps) {
 
       const elapsed = performance.now() - startTime
 
-      if (elapsed < spawnDuration && frame % 2 === 0) {
+      // Spawn new particles
+      if (elapsed < spawnDuration && frame % 3 === 0) {
         for (let i = 0; i < perFrame; i++) {
           const color = palette[Math.floor(Math.random() * palette.length)]
+          const spawnX = Math.random() * canvas.width
           particles.push(new ConfettiParticle(
-            Math.random() * canvas.width,
-            -15,
-            (Math.random() - 0.5) * 2.5,
-            2 + Math.random() * 2.5,
+            spawnX,
+            -20,
+            (Math.random() - 0.5) * 2,
+            1.5 + Math.random() * 2,
             color,
+            canvas.width,
           ))
         }
       }
 
-      particles.forEach(p => { p.update(); p.draw(ctx) })
-      particles = particles.filter(p => p.life < PARTICLE_LIFE && p.y < canvas.height + 100)
+      // Update and draw particles
+      particles.forEach(p => {
+        p.update()
+        p.draw(ctx)
+      })
 
+      // Remove dead particles
+      particles = particles.filter(p => p.life < PARTICLE_LIFE && p.y < canvas.height + 50 && p.opacity > 0)
+
+      // Stop animation when all particles are gone
       if (elapsed >= spawnDuration && particles.length === 0) {
         running = false
         ctx.clearRect(0, 0, canvas.width, canvas.height)

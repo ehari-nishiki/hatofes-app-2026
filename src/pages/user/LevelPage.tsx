@@ -63,7 +63,7 @@ export default function LevelPage() {
       <main className="max-w-lg mx-auto px-4 py-6 space-y-6">
         {/* Current Level */}
         <section className="card text-center">
-          <p className="text-sm text-hatofes-gray mb-2 font-display">YOUR LEVEL</p>
+          <p className="text-sm text-hatofes-gray mb-2">現在のレベル</p>
           <div
             className="text-6xl font-bold font-display mb-2"
             style={{
@@ -95,7 +95,7 @@ export default function LevelPage() {
         {progress ? (
           <section className="card">
             <div className="flex justify-between items-center mb-2">
-              <p className="text-sm text-hatofes-white font-display">Next: Lv.{level + 1}</p>
+              <p className="text-sm text-hatofes-white">次のレベル: Lv.{level + 1}</p>
               <p className="text-sm text-hatofes-gray font-display">
                 {progress.current.toLocaleString()} / {progress.next.toLocaleString()} pt
               </p>
@@ -109,33 +109,33 @@ export default function LevelPage() {
                 }}
               />
             </div>
-            <p className="text-xs text-hatofes-gray mt-2 text-right font-display">
-              Next: {(LEVEL_THRESHOLDS[level] - userData.totalPoints).toLocaleString()} pt
+            <p className="text-xs text-hatofes-gray mt-2 text-right">
+              あと {(LEVEL_THRESHOLDS[level] - userData.totalPoints).toLocaleString()} pt
             </p>
           </section>
         ) : (
           <section className="card text-center">
-            <p className="text-hatofes-accent-yellow font-bold font-display">MAX LEVEL REACHED!</p>
-            <p className="text-sm text-hatofes-gray mt-1 font-display">You've reached the highest level!</p>
+            <p className="text-hatofes-accent-yellow font-bold">最高レベル達成!</p>
+            <p className="text-sm text-hatofes-gray mt-1">おめでとうございます!</p>
           </section>
         )}
 
         {/* Percentile */}
         {percentile !== null && (
           <section className="card text-center">
-            <p className="text-sm text-hatofes-gray mb-2 font-display">Your Ranking</p>
+            <p className="text-sm text-hatofes-gray mb-2">あなたの順位</p>
             <p className="text-3xl font-bold font-display text-gradient">
-              Top {100 - percentile}%
+              上位 {100 - percentile}%
             </p>
-            <p className="text-xs text-hatofes-gray mt-1 font-display">
-              {percentile}% of players behind you
+            <p className="text-xs text-hatofes-gray mt-1">
+              全体の {percentile}% のユーザーより上位です
             </p>
           </section>
         )}
 
         {/* Level Pyramid */}
         <section className="card">
-          <h2 className="text-lg font-bold text-hatofes-white mb-4 text-center font-display">Level Tiers</h2>
+          <h2 className="text-lg font-bold text-hatofes-white mb-4 text-center">レベル一覧</h2>
           <div className="space-y-2">
             {[...Array(MAX_LEVEL)].map((_, i) => {
               const lvl = MAX_LEVEL - i
@@ -187,7 +187,7 @@ export default function LevelPage() {
 
         {/* Back Button */}
         <Link to="/home" className="block">
-          <div className="btn-sub w-full py-3 text-center font-display">Back to Home</div>
+          <div className="btn-sub w-full py-3 text-center">ホームに戻る</div>
         </Link>
       </main>
     </div>

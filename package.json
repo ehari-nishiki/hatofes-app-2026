@@ -12,12 +12,17 @@
     "create-admin": "tsx src/scripts/createAdminAccount.ts"
   },
   "dependencies": {
+    "@react-three/drei": "^9.122.0",
+    "@react-three/fiber": "^8.18.0",
+    "@types/three": "^0.182.0",
     "animejs": "^4.3.5",
     "browser-image-compression": "^2.0.2",
     "firebase": "^10.8.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.22.0"
+    "react-router-dom": "^6.22.0",
+    "recharts": "^2.15.4",
+    "three": "^0.182.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

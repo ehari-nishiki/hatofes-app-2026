@@ -11,6 +11,7 @@ interface GachaRevealOverlayProps {
   itemType: string
   pointsValue?: number | null
   ticketValue?: number | null
+  slideDirection?: 'left' | 'right'
   onComplete: () => void
 }
 
@@ -22,7 +23,7 @@ const RARITY_CONFIG: Record<
     bgGradient: string
     glowColor: string
     particleCount: number
-    buildupDuration: number // ローディング時間
+    buildupDuration: number
   }
 > = {
   common: {
@@ -31,7 +32,7 @@ const RARITY_CONFIG: Record<
     bgGradient: 'radial-gradient(circle, rgba(156,163,175,0.3) 0%, transparent 70%)',
     glowColor: 'rgba(156,163,175,0.5)',
     particleCount: 20,
-    buildupDuration: 500,
+    buildupDuration: 400,
   },
   uncommon: {
     label: 'UNCOMMON',
@@ -39,7 +40,7 @@ const RARITY_CONFIG: Record<
     bgGradient: 'radial-gradient(circle, rgba(74,222,128,0.3) 0%, transparent 70%)',
     glowColor: 'rgba(74,222,128,0.5)',
     particleCount: 30,
-    buildupDuration: 500,
+    buildupDuration: 400,
   },
   rare: {
     label: 'RARE',
@@ -55,7 +56,7 @@ const RARITY_CONFIG: Record<
     bgGradient: 'radial-gradient(circle, rgba(192,132,252,0.5) 0%, transparent 70%)',
     glowColor: 'rgba(192,132,252,0.7)',
     particleCount: 80,
-    buildupDuration: 800,
+    buildupDuration: 600,
   },
   legendary: {
     label: 'LEGENDARY',
@@ -63,7 +64,7 @@ const RARITY_CONFIG: Record<
     bgGradient: 'radial-gradient(circle, rgba(255,195,0,0.6) 0%, rgba(255,78,0,0.3) 50%, transparent 80%)',
     glowColor: 'rgba(255,195,0,0.8)',
     particleCount: 120,
-    buildupDuration: 1200,
+    buildupDuration: 800,
   },
 }
 
@@ -76,6 +77,7 @@ export function GachaRevealOverlay({
   itemType,
   pointsValue,
   ticketValue,
+  slideDirection = 'left',
   onComplete,
 }: GachaRevealOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -91,7 +93,7 @@ export function GachaRevealOverlay({
       return
     }
 
-    const skipTimer = setTimeout(() => setShowSkip(true), 300)
+    const skipTimer = setTimeout(() => setShowSkip(true), 200)
     const buildupDuration = config.buildupDuration
 
     const revealTimer = setTimeout(() => {
@@ -99,7 +101,7 @@ export function GachaRevealOverlay({
       setTimeout(() => {
         setPhase('shown')
         startParticles()
-      }, 150)
+      }, 100)
     }, buildupDuration)
 
     return () => {
@@ -201,6 +203,8 @@ export function GachaRevealOverlay({
 
   if (!active) return null
 
+  const slideClass = slideDirection === 'left' ? 'slide-in-left' : 'slide-in-right'
+
   return (
     <div
       className={`fixed inset-0 z-50 flex items-center justify-center transition-colors duration-300 ${
@@ -223,7 +227,7 @@ export function GachaRevealOverlay({
       {phase === 'buildup' && (
         <div className="text-center animate-pulse">
           <div
-            className="w-24 h-24 rounded-full border-4 mx-auto mb-4"
+            className="w-20 h-20 rounded-full border-4 mx-auto mb-4"
             style={{
               borderColor: config.colors[0],
               boxShadow: `0 0 30px ${config.glowColor}`,
@@ -238,21 +242,21 @@ export function GachaRevealOverlay({
         </div>
       )}
 
-      {/* Reveal card */}
+      {/* Reveal card with slide animation */}
       {phase === 'shown' && (
         <div
-          className="relative max-w-sm w-full mx-4 animate-card-entrance"
+          className={`relative max-w-sm w-full mx-4 ${slideClass}`}
           style={{ perspective: '1000px' }}
         >
           <div
-            className="rounded-2xl p-6 text-center border-2"
+            className="rounded-2xl p-6 text-center border-2 backdrop-blur-xl"
             style={{
-              background: `linear-gradient(135deg, rgba(20,20,40,0.95) 0%, rgba(30,30,60,0.95) 100%)`,
+              background: `linear-gradient(135deg, rgba(20,20,40,0.9) 0%, rgba(30,30,60,0.9) 100%)`,
               borderColor: config.colors[0],
               boxShadow: `0 0 40px ${config.glowColor}, inset 0 0 30px ${config.glowColor}`,
             }}
           >
-            {/* Rarity label with gradient text for legendary/epic */}
+            {/* Rarity label */}
             <div
               className="inline-block px-4 py-1 rounded-full text-sm font-bold tracking-widest mb-4 font-display"
               style={{
@@ -273,12 +277,12 @@ export function GachaRevealOverlay({
                 <img
                   src={itemImageUrl}
                   alt={itemName}
-                  className="w-32 h-32 mx-auto rounded-lg object-cover"
+                  className="w-28 h-28 mx-auto rounded-lg object-cover"
                   style={{ boxShadow: `0 0 20px ${config.glowColor}` }}
                 />
               ) : (
                 <div
-                  className="w-32 h-32 mx-auto rounded-lg flex items-center justify-center text-6xl"
+                  className="w-28 h-28 mx-auto rounded-lg flex items-center justify-center text-5xl"
                   style={{
                     background: `linear-gradient(135deg, ${config.colors[0]}20, ${config.colors[1] || config.colors[0]}20)`,
                     boxShadow: `0 0 20px ${config.glowColor}`,
@@ -299,7 +303,7 @@ export function GachaRevealOverlay({
               <p className="text-white/70 text-sm mb-4">{itemDescription}</p>
             )}
 
-            {/* Value - DINフォント＋グラデーション */}
+            {/* Value */}
             {itemType === 'points' && pointsValue && (
               <div
                 className="inline-block px-4 py-2 rounded-lg text-xl font-bold font-display"
@@ -344,21 +348,31 @@ export function GachaRevealOverlay({
           25% { transform: translateX(-5px); }
           75% { transform: translateX(5px); }
         }
-        @keyframes card-entrance {
+        @keyframes slide-in-left {
           0% {
             opacity: 0;
-            transform: scale(0) rotateY(90deg);
-          }
-          60% {
-            transform: scale(1.1) rotateY(0);
+            transform: translateX(-100px) scale(0.8);
           }
           100% {
             opacity: 1;
-            transform: scale(1) rotateY(0);
+            transform: translateX(0) scale(1);
           }
         }
-        .animate-card-entrance {
-          animation: card-entrance 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+        @keyframes slide-in-right {
+          0% {
+            opacity: 0;
+            transform: translateX(100px) scale(0.8);
+          }
+          100% {
+            opacity: 1;
+            transform: translateX(0) scale(1);
+          }
+        }
+        .slide-in-left {
+          animation: slide-in-left 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+        }
+        .slide-in-right {
+          animation: slide-in-right 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
         }
       `}</style>
     </div>

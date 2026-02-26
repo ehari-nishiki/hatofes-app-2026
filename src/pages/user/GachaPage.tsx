@@ -1,22 +1,43 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { collection, query, where, orderBy, getDocs, limit, doc, getDoc } from 'firebase/firestore'
 import { getFunctions, httpsCallable } from 'firebase/functions'
 import { getAuth } from 'firebase/auth'
-import { animate, stagger } from 'animejs'
 import { db } from '@/lib/firebase'
 import app from '@/lib/firebase'
 import AppHeader from '@/components/layout/AppHeader'
 import { useAuth } from '@/contexts/AuthContext'
 import { Spinner } from '@/components/ui/Spinner'
+import { SkeletonCard } from '@/components/ui/SkeletonLoader'
 import { PointRewardModal } from '@/components/ui/PointRewardModal'
 import { GachaConfetti } from '@/components/ui/GachaConfetti'
-import { GachaRevealOverlay } from '@/components/ui/GachaRevealOverlay'
 import { GachaItemDetailModal } from '@/components/ui/GachaItemDetailModal'
-import { AnimatedButton } from '@/components/ui/AnimatedButton'
+import { WebGLAurora } from '@/components/ui/WebGLAurora'
+import { GachaPullLoading } from '@/components/gacha/GachaPullLoading'
+import { GachaCardReveal } from '@/components/gacha/GachaCardReveal'
 import type { GachaHistoryEntry, GachaRarity, GachaItem } from '@/types/firestore'
 
 const functions = getFunctions(app)
+
+// Batch pull function for better performance
+const pullGachaBatchFn = httpsCallable<
+  { count: number },
+  {
+    success: boolean
+    items: Array<{
+      id: string
+      name: string
+      description: string
+      rarity: GachaRarity
+      type: string
+      pointsValue: number | null
+      ticketValue: number | null
+      imageUrl?: string
+    }>
+  }
+>(functions, 'pullGachaBatch')
+
+// Fallback single pull
 const pullGachaFn = httpsCallable<
   Record<string, never>,
   {
@@ -54,11 +75,11 @@ const RARITY_COLORS: Record<GachaRarity, string> = {
 }
 
 const RARITY_BG: Record<GachaRarity, string> = {
-  common: 'bg-gray-500/20 border-gray-500',
-  uncommon: 'bg-green-500/20 border-green-500',
-  rare: 'bg-blue-500/20 border-blue-500',
-  epic: 'bg-purple-500/20 border-purple-500',
-  legendary: 'bg-hatofes-accent-yellow/20 border-hatofes-accent-yellow',
+  common: 'bg-gray-500/20 border-gray-500/50',
+  uncommon: 'bg-green-500/20 border-green-500/50',
+  rare: 'bg-blue-500/20 border-blue-500/50',
+  epic: 'bg-purple-500/20 border-purple-500/50',
+  legendary: 'bg-hatofes-accent-yellow/20 border-hatofes-accent-yellow/50',
 }
 
 const RARITY_LABELS: Record<GachaRarity, string> = {
@@ -84,20 +105,30 @@ type HistoryItemWithDetails = GachaHistoryEntry & {
 
 export default function GachaPage() {
   const { userData, refreshUserData } = useAuth()
+
+  // Scroll to top on mount
+  useEffect(() => {
+    window.scrollTo(0, 0)
+  }, [])
+
+  // Pull state
   const [pulling, setPulling] = useState(false)
-  const [currentReveal, setCurrentReveal] = useState<PullResult | null>(null)
+  const [pullCount, setPullCount] = useState<1 | 10>(1)
   const [results, setResults] = useState<PullResult[]>([])
-  const [revealQueue, setRevealQueue] = useState<PullResult[]>([])
+  const [pullError, setPullError] = useState<string | null>(null)
+
+  // Animation states
+  const [showLoading, setShowLoading] = useState(false)
+  const [showCardReveal, setShowCardReveal] = useState(false)
+  const [showResults, setShowResults] = useState(false)
+
+  // History & modals
   const [history, setHistory] = useState<HistoryItemWithDetails[]>([])
   const [historyLoading, setHistoryLoading] = useState(true)
   const [showRewardModal, setShowRewardModal] = useState(false)
   const [rewardAmount, setRewardAmount] = useState(0)
   const [rewardType, setRewardType] = useState<'points' | 'ticket'>('points')
-  const [pullError, setPullError] = useState<string | null>(null)
   const [selectedHistoryItem, setSelectedHistoryItem] = useState<HistoryItemWithDetails | null>(null)
-
-  const machineRef = useRef<HTMLDivElement>(null)
-  const ballsRef = useRef<HTMLDivElement>(null)
 
   const tickets = userData?.gachaTickets ?? 0
 
@@ -110,29 +141,6 @@ export default function GachaPage() {
     fetchHistory()
   }, [userData])
 
-  // Animate machine on mount
-  useEffect(() => {
-    if (machineRef.current) {
-      animate(machineRef.current, {
-        scale: [0.9, 1],
-        opacity: [0, 1],
-        duration: 800,
-        ease: 'outBack',
-      })
-    }
-    // Floating balls animation
-    if (ballsRef.current) {
-      animate(ballsRef.current.children, {
-        translateY: [-5, 5],
-        duration: 1500,
-        delay: stagger(200),
-        alternate: true,
-        loop: true,
-        ease: 'inOutSine',
-      })
-    }
-  }, [])
-
   const fetchHistory = async () => {
     const authInstance = getAuth()
     if (!authInstance.currentUser) { setHistoryLoading(false); return }
@@ -142,24 +150,31 @@ export default function GachaPage() {
         collection(db, 'gachaHistory'),
         where('userId', '==', uid),
         orderBy('pulledAt', 'desc'),
-        limit(20)
+        limit(10)
       )
       const snap = await getDocs(q)
       const list: HistoryItemWithDetails[] = []
 
+      // Batch fetch item details
+      const itemIds = [...new Set(snap.docs.map(d => d.data().itemId))]
+      const itemDetailsMap = new Map<string, Partial<GachaItem>>()
+
+      await Promise.all(
+        itemIds.map(async (itemId) => {
+          try {
+            const itemDoc = await getDoc(doc(db, 'gachaItems', itemId))
+            if (itemDoc.exists()) {
+              itemDetailsMap.set(itemId, itemDoc.data() as GachaItem)
+            }
+          } catch {
+            // Ignore
+          }
+        })
+      )
+
       for (const docSnap of snap.docs) {
         const data = docSnap.data() as GachaHistoryEntry
-        let itemDetails: Partial<GachaItem> = {}
-
-        // Fetch item details for image
-        try {
-          const itemDoc = await getDoc(doc(db, 'gachaItems', data.itemId))
-          if (itemDoc.exists()) {
-            itemDetails = itemDoc.data() as GachaItem
-          }
-        } catch {
-          // Ignore if item not found
-        }
+        const itemDetails = itemDetailsMap.get(data.itemId) || {}
 
         list.push({
           id: docSnap.id,
@@ -180,99 +195,88 @@ export default function GachaPage() {
   }
 
   const handlePull = async (count: 1 | 10) => {
-    if (pulling || currentReveal || tickets < count) return
+    if (pulling || showCardReveal || tickets < count) return
+
     setPulling(true)
+    setPullCount(count)
     setResults([])
     setPullError(null)
+    setShowResults(false)
+    setShowLoading(true)
 
-    // Shake animation
-    if (machineRef.current) {
-      animate(machineRef.current, {
-        rotate: [-2, 2, -2, 2, 0],
-        duration: 200,
-        loop: true,
-      })
-    }
-
-    const minDelay = count === 1 ? 1500 : 2500
     const collected: PullResult[] = []
 
-    await Promise.all([
-      (async () => {
-        for (let i = 0; i < count; i++) {
-          try {
+    try {
+      // Try batch pull first (faster)
+      if (count > 1) {
+        try {
+          const res = await pullGachaBatchFn({ count })
+          collected.push(...res.data.items.map(item => ({
+            ...item,
+            description: item.description || '',
+          })))
+        } catch {
+          // Fallback to sequential pulls
+          for (let i = 0; i < count; i++) {
             const res = await pullGachaFn({} as Record<string, never>)
             collected.push({
               ...res.data.item,
               description: res.data.item.description || '',
             })
-          } catch (err: unknown) {
-            const msg = err instanceof Error ? err.message : 'ガチャの抽選に失敗しました'
-            setPullError(msg)
-            break
           }
         }
-      })(),
-      new Promise(resolve => setTimeout(resolve, minDelay)),
-    ])
-
-    // Stop shake animation
-    if (machineRef.current) {
-      // Reset rotation
-      machineRef.current.style.transform = ''
-      animate(machineRef.current, {
-        rotate: 0,
-        duration: 200,
-      })
+      } else {
+        const res = await pullGachaFn({} as Record<string, never>)
+        collected.push({
+          ...res.data.item,
+          description: res.data.item.description || '',
+        })
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'ガチャの抽選に失敗しました'
+      setPullError(msg)
+      setPulling(false)
+      setShowLoading(false)
+      return
     }
 
     setPulling(false)
-    if (collected.length === 0) return
+
+    if (collected.length === 0) {
+      setShowLoading(false)
+      return
+    }
 
     setResults(collected)
 
-    if (count === 1) {
-      // Single pull - show dramatic reveal
-      setCurrentReveal(collected[0])
-    } else {
-      // 10 pull - queue reveals for best items, show list for rest
-      const sorted = [...collected].sort((a, b) => RARITY_ORDER[b.rarity] - RARITY_ORDER[a.rarity])
-      // Show reveal for epic+ items
-      const specialItems = sorted.filter(r => RARITY_ORDER[r.rarity] >= RARITY_ORDER['rare'])
-      if (specialItems.length > 0) {
-        setRevealQueue(specialItems)
-        setCurrentReveal(specialItems[0])
-      } else {
-        finishPull(collected)
-      }
-    }
+    // Wait a bit for loading animation effect, then show cards
+    setTimeout(() => {
+      setShowLoading(false)
+      setShowCardReveal(true)
+    }, 1500)
   }
 
-  const handleRevealComplete = () => {
-    if (revealQueue.length > 1) {
-      // More items to reveal
-      const remaining = revealQueue.slice(1)
-      setRevealQueue(remaining)
-      setTimeout(() => setCurrentReveal(remaining[0]), 300)
-    } else {
-      // All reveals done
-      setRevealQueue([])
-      setCurrentReveal(null)
-      finishPull(results)
-    }
-  }
+  const handleCardRevealComplete = () => {
+    setShowCardReveal(false)
+    setShowResults(true)
 
-  const finishPull = (collected: PullResult[]) => {
+    // Calculate rewards
     let totalPt = 0, totalTk = 0
-    for (const r of collected) {
+    for (const r of results) {
       if (r.type === 'points' && r.pointsValue) totalPt += r.pointsValue
       if (r.type === 'ticket' && r.ticketValue) totalTk += r.ticketValue
     }
+
     if (totalPt > 0) {
-      setRewardType('points'); setRewardAmount(totalPt); setShowRewardModal(true)
+      setRewardType('points')
+      setRewardAmount(totalPt)
+      setShowRewardModal(true)
     } else if (totalTk > 0) {
-      setRewardType('ticket'); setRewardAmount(totalTk); setShowRewardModal(true)
+      setRewardType('ticket')
+      setRewardAmount(totalTk)
+      setShowRewardModal(true)
     }
+
     fetchHistory()
     refreshUserData?.()
   }
@@ -285,26 +289,24 @@ export default function GachaPage() {
     )
   }
 
-  const busy = pulling || !!currentReveal
+  const busy = pulling || showCardReveal || showLoading
 
   return (
     <>
-      <GachaConfetti active={results.length > 0 && !currentReveal} rarity={bestRarity} />
+      {/* Confetti for results */}
+      <GachaConfetti active={showResults && results.length > 0} rarity={bestRarity} />
 
-      {currentReveal && (
-        <GachaRevealOverlay
-          active={true}
-          rarity={currentReveal.rarity}
-          itemName={currentReveal.name}
-          itemDescription={currentReveal.description}
-          itemImageUrl={currentReveal.imageUrl}
-          itemType={currentReveal.type}
-          pointsValue={currentReveal.pointsValue}
-          ticketValue={currentReveal.ticketValue}
-          onComplete={handleRevealComplete}
-        />
-      )}
+      {/* Loading animation */}
+      <GachaPullLoading active={showLoading} pullCount={pullCount} />
 
+      {/* Card reveal */}
+      <GachaCardReveal
+        active={showCardReveal}
+        cards={results}
+        onComplete={handleCardRevealComplete}
+      />
+
+      {/* Reward modal */}
       {showRewardModal && (
         <PointRewardModal
           isOpen={showRewardModal}
@@ -313,11 +315,12 @@ export default function GachaPage() {
             ? `ガチャから${rewardAmount}枚チケット獲得`
             : `ガチャから${rewardAmount}pt獲得`}
           unit={rewardType === 'ticket' ? '🎫枚' : 'pt'}
-          title={rewardType === 'ticket' ? 'チケット獲得！' : 'ポイント獲得！'}
+          title={rewardType === 'ticket' ? 'チケット獲得!' : 'ポイント獲得!'}
           onClose={() => setShowRewardModal(false)}
         />
       )}
 
+      {/* History item detail modal */}
       {selectedHistoryItem && (
         <GachaItemDetailModal
           isOpen={true}
@@ -335,231 +338,186 @@ export default function GachaPage() {
         />
       )}
 
-      <div className="min-h-screen bg-hatofes-bg pb-8">
-        <AppHeader
-          username={userData.username}
-          grade={userData.grade}
-          classNumber={userData.class}
-        />
+      <div className="min-h-screen bg-hatofes-bg pb-8 relative overflow-hidden">
+        {/* WebGL Aurora Background */}
+        <div className="fixed inset-0 z-0">
+          <WebGLAurora intensity="normal" colorScheme="gold" />
+        </div>
 
-        <main className="max-w-lg mx-auto px-4 py-6 space-y-6">
-          {/* Ticket counter with animation */}
-          <section className="card text-center relative overflow-hidden">
-            <div className="absolute inset-0 bg-gradient-to-r from-hatofes-accent-yellow/5 via-transparent to-hatofes-accent-orange/5" />
-            <div className="relative">
-              <p className="text-hatofes-gray text-sm mb-1">チケット残数</p>
-              <p className="text-4xl font-bold text-hatofes-white font-display">
+        <div className="relative z-10">
+          <AppHeader
+            username={userData.username}
+            grade={userData.grade}
+            classNumber={userData.class}
+          />
+
+          <main className="max-w-lg mx-auto px-4 py-6 space-y-6">
+            {/* Ticket counter - Glass morphism */}
+            <section className="glass-card text-center fade-in-up">
+              <p className="text-white/60 text-sm mb-1">チケット残数</p>
+              <p className="text-5xl font-bold text-white font-display">
                 <span className="inline-block animate-bounce-subtle">🎫</span>{' '}
                 <span className="text-gradient">{tickets}</span>
-                <span className="text-lg text-hatofes-gray ml-1">枚</span>
               </p>
-            </div>
-          </section>
+            </section>
 
-          {/* Error */}
-          {pullError && (
-            <div className="bg-red-500/20 text-red-400 text-sm p-3 rounded-lg text-center border border-red-500/30">
-              {pullError}
-            </div>
-          )}
-
-          {/* Gacha Machine - Enhanced */}
-          <section className="card text-center relative overflow-hidden">
-            {/* Background gradient */}
-            <div className="absolute inset-0 bg-gradient-to-b from-transparent via-hatofes-accent-yellow/5 to-transparent" />
-
-            <div
-              ref={machineRef}
-              className={`relative mx-auto w-44 h-52 rounded-t-full border-4 border-hatofes-accent-yellow bg-gradient-to-b from-hatofes-dark to-hatofes-bg flex items-end justify-center pb-4 overflow-hidden opacity-0`}
-              style={{
-                boxShadow: '0 0 30px rgba(255,195,0,0.2), inset 0 -20px 40px rgba(0,0,0,0.5)',
-              }}
-            >
-              {/* Glow effect when pulling */}
-              {pulling && (
-                <div className="absolute inset-0 bg-gradient-to-t from-hatofes-accent-yellow/20 to-transparent animate-pulse" />
-              )}
-
-              {/* Balls inside */}
-              <div ref={ballsRef} className={`flex flex-wrap gap-1 justify-center p-2 ${pulling ? 'animate-bounce' : ''}`}>
-                {['bg-red-400', 'bg-blue-400', 'bg-green-400', 'bg-purple-400', 'bg-hatofes-accent-yellow', 'bg-pink-400', 'bg-cyan-400'].map((color, i) => (
-                  <div
-                    key={i}
-                    className={`w-6 h-6 ${color} rounded-full`}
-                    style={{
-                      boxShadow: `0 2px 4px rgba(0,0,0,0.3), inset 0 -2px 4px rgba(0,0,0,0.2), inset 0 2px 4px rgba(255,255,255,0.3)`,
-                    }}
-                  />
-                ))}
+            {/* Error */}
+            {pullError && (
+              <div className="glass-card bg-red-500/10 border-red-500/30 text-red-400 text-sm text-center">
+                {pullError}
               </div>
+            )}
 
-              {/* Glass reflection */}
-              <div
-                className="absolute top-0 left-0 w-1/3 h-full opacity-20"
-                style={{
-                  background: 'linear-gradient(90deg, transparent, white, transparent)',
-                }}
-              />
-            </div>
-
-            {/* Dispenser */}
-            <div className="relative">
-              <div
-                className="w-24 h-5 bg-gradient-to-b from-hatofes-accent-orange to-hatofes-accent-yellow rounded-b-lg mx-auto"
-                style={{ boxShadow: '0 4px 10px rgba(255,78,0,0.3)' }}
-              />
-              <div className="w-8 h-3 bg-hatofes-dark rounded-b-lg mx-auto" />
-            </div>
-
-            {/* Pull buttons - 英語に変更 */}
-            <div className="flex gap-4 mt-6 relative">
-              <AnimatedButton
+            {/* Pull Buttons */}
+            <div className="space-y-4">
+              <button
                 onClick={() => handlePull(1)}
                 disabled={busy || tickets < 1}
-                loading={pulling}
-                variant="primary"
-                size="lg"
-                className="flex-1"
-                loadingText="..."
+                className="w-full py-5 rounded-2xl font-bold text-lg transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed glass-card border-2 border-white/20 hover:border-hatofes-accent-yellow/50 hover:shadow-[0_0_30px_rgba(255,195,0,0.3)] active:scale-[0.98]"
               >
-                {tickets < 1 ? 'No Ticket' : '1 Pull'}
-              </AnimatedButton>
+                {tickets < 1 ? (
+                  <span className="text-white/50">チケットが足りません</span>
+                ) : (
+                  <span className="text-white">🎰 1回引く</span>
+                )}
+              </button>
 
-              <AnimatedButton
+              <button
                 onClick={() => handlePull(10)}
                 disabled={busy || tickets < 10}
-                loading={pulling}
-                variant="gradient"
-                size="lg"
-                className="flex-1"
+                className="w-full py-5 rounded-2xl font-bold text-lg transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed glass-card border-2 border-white/20 hover:border-hatofes-accent-yellow/50 hover:shadow-[0_0_30px_rgba(255,195,0,0.3)] active:scale-[0.98]"
               >
-                10 Pull
-              </AnimatedButton>
+                {tickets < 10 ? (
+                  <span className="text-white/50">チケットが足りません (10枚必要)</span>
+                ) : (
+                  <span className="text-white">🎰 10回引く</span>
+                )}
+              </button>
             </div>
-          </section>
 
-          {/* Results display - only for 10 pull list */}
-          {results.length > 1 && !currentReveal && !revealQueue.length && (
-            <section className="card">
-              <h2 className="text-hatofes-white font-bold mb-3 text-center flex items-center justify-center gap-2 font-display">
-                <span className="text-xl">🎊</span>
-                Result
-                <span className="text-xl">🎊</span>
-              </h2>
-              <ul className="space-y-2">
-                {[...results]
-                  .sort((a, b) => RARITY_ORDER[b.rarity] - RARITY_ORDER[a.rarity])
-                  .map((r, i) => {
-                    const isBest = i === 0
-                    return (
-                      <li
-                        key={i}
-                        onClick={() => setSelectedHistoryItem({
-                          id: `result-${i}`,
-                          userId: '',
-                          itemId: r.id,
-                          itemName: r.name,
-                          itemRarity: r.rarity,
-                          pulledAt: { seconds: Date.now() / 1000, nanoseconds: 0 } as import('firebase/firestore').Timestamp,
-                          imageUrl: r.imageUrl,
-                          description: r.description,
-                          type: r.type,
-                          pointsValue: r.pointsValue ?? undefined,
-                          ticketValue: r.ticketValue ?? undefined,
-                        })}
-                        className={`flex items-center justify-between p-3 rounded-lg transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98] ${
-                          isBest ? `border ${RARITY_BG[r.rarity]}` : 'bg-hatofes-dark hover:bg-hatofes-dark/80'
-                        }`}
-                        style={{
-                          animationDelay: `${i * 50}ms`,
-                        }}
-                      >
-                        <div className="flex items-center gap-3">
-                          {r.imageUrl ? (
-                            <img src={r.imageUrl} alt={r.name} className="w-10 h-10 rounded-lg object-cover" />
-                          ) : (
-                            <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-xl ${RARITY_BG[r.rarity].split(' ')[0]}`}>
-                              {r.type === 'points' ? '💰' : r.type === 'ticket' ? '🎫' : '🎁'}
+            {/* Results display */}
+            {showResults && results.length > 0 && (
+              <section className="glass-card fade-in-up">
+                <h2 className="text-white font-bold mb-3 text-center font-display">
+                  🎊 結果 🎊
+                </h2>
+                <ul className="space-y-2">
+                  {[...results]
+                    .sort((a, b) => RARITY_ORDER[b.rarity] - RARITY_ORDER[a.rarity])
+                    .map((r, i) => {
+                      const isBest = i === 0
+                      return (
+                        <li
+                          key={i}
+                          onClick={() => setSelectedHistoryItem({
+                            id: `result-${i}`,
+                            userId: '',
+                            itemId: r.id,
+                            itemName: r.name,
+                            itemRarity: r.rarity,
+                            pulledAt: { seconds: Date.now() / 1000, nanoseconds: 0 } as import('firebase/firestore').Timestamp,
+                            imageUrl: r.imageUrl,
+                            description: r.description,
+                            type: r.type,
+                            pointsValue: r.pointsValue ?? undefined,
+                            ticketValue: r.ticketValue ?? undefined,
+                          })}
+                          className={`flex items-center justify-between p-3 rounded-xl transition-all cursor-pointer hover:bg-white/10 active:scale-[0.98] ${
+                            isBest ? `border ${RARITY_BG[r.rarity]}` : 'bg-white/5'
+                          }`}
+                          style={{ animationDelay: `${i * 50}ms` }}
+                        >
+                          <div className="flex items-center gap-3">
+                            {r.imageUrl ? (
+                              <img src={r.imageUrl} alt={r.name} className="w-10 h-10 rounded-lg object-cover" />
+                            ) : (
+                              <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-xl ${RARITY_BG[r.rarity].split(' ')[0]}`}>
+                                {r.type === 'points' ? '💰' : r.type === 'ticket' ? '🎫' : '🎁'}
+                              </div>
+                            )}
+                            <div>
+                              <p className={`text-sm ${isBest ? 'font-bold' : ''} text-white`}>{r.name}</p>
+                              <span className={`text-xs font-bold ${RARITY_COLORS[r.rarity]}`}>{RARITY_LABELS[r.rarity]}</span>
                             </div>
-                          )}
-                          <div>
-                            <p className={`text-sm ${isBest ? 'font-bold' : ''} text-hatofes-white`}>{r.name}</p>
-                            <span className={`text-xs font-bold ${RARITY_COLORS[r.rarity]}`}>{RARITY_LABELS[r.rarity]}</span>
                           </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <div className="text-right">
+                          <div className="flex items-center gap-2">
                             {r.type === 'points' && r.pointsValue && (
                               <span className="text-sm text-hatofes-accent-yellow font-bold font-display">+{r.pointsValue}pt</span>
                             )}
                             {r.type === 'ticket' && r.ticketValue && (
                               <span className="text-sm text-hatofes-accent-yellow font-bold font-display">+{r.ticketValue}🎫</span>
                             )}
-                            {isBest && <span className="block text-xs text-hatofes-accent-yellow mt-0.5">★ Best</span>}
                           </div>
-                          <svg className="w-4 h-4 text-hatofes-gray" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                          </svg>
-                        </div>
-                      </li>
-                    )
-                  })
-                }
-              </ul>
-            </section>
-          )}
-
-          {/* History - Clickable items */}
-          <section className="card">
-            <h2 className="font-bold text-hatofes-white mb-4 flex items-center gap-2">
-              <span>📜</span> 引き歴
-            </h2>
-            {historyLoading ? (
-              <div className="flex justify-center py-4"><Spinner size="md" /></div>
-            ) : history.length === 0 ? (
-              <p className="text-hatofes-gray text-center py-4 text-sm">まだガチャを引いていません</p>
-            ) : (
-              <ul className="space-y-2">
-                {history.map((entry) => (
-                  <li
-                    key={entry.id}
-                    onClick={() => setSelectedHistoryItem(entry)}
-                    className="flex items-center justify-between py-2.5 px-3 -mx-1 rounded-lg cursor-pointer hover:bg-hatofes-dark/50 transition-all active:scale-[0.98]"
-                  >
-                    <div className="flex items-center gap-3">
-                      {entry.imageUrl ? (
-                        <img src={entry.imageUrl} alt={entry.itemName} className="w-10 h-10 rounded-lg object-cover" />
-                      ) : (
-                        <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-lg ${RARITY_BG[entry.itemRarity].split(' ')[0]}`}>
-                          {entry.type === 'points' ? '💰' : entry.type === 'ticket' ? '🎫' : '🎁'}
-                        </div>
-                      )}
-                      <div>
-                        <p className="text-sm text-hatofes-white">{entry.itemName}</p>
-                        <p className={`text-xs font-bold ${RARITY_COLORS[entry.itemRarity]}`}>{RARITY_LABELS[entry.itemRarity]}</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <p className="text-xs text-hatofes-gray">
-                        {entry.pulledAt?.seconds ? new Date(entry.pulledAt.seconds * 1000).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' }) : ''}
-                      </p>
-                      <svg className="w-4 h-4 text-hatofes-gray" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                      </svg>
-                    </div>
-                  </li>
-                ))}
-              </ul>
+                        </li>
+                      )
+                    })
+                  }
+                </ul>
+              </section>
             )}
-          </section>
 
-          <Link to="/home" className="block">
-            <div className="btn-sub w-full py-3 text-center">ホームに戻る</div>
-          </Link>
-        </main>
+            {/* History - Glass morphism */}
+            <section className="glass-card fade-in-up fade-in-delay-2">
+              <h2 className="font-bold text-white mb-4 flex items-center gap-2">
+                📜 引き歴
+              </h2>
+              {historyLoading ? (
+                <SkeletonCard count={3} />
+              ) : history.length === 0 ? (
+                <p className="text-white/50 text-center py-4 text-sm">まだガチャを引いていません</p>
+              ) : (
+                <ul className="space-y-2">
+                  {history.map((entry) => (
+                    <li
+                      key={entry.id}
+                      onClick={() => setSelectedHistoryItem(entry)}
+                      className="flex items-center justify-between py-2.5 px-3 rounded-xl cursor-pointer hover:bg-white/10 transition-all active:scale-[0.98]"
+                    >
+                      <div className="flex items-center gap-3">
+                        {entry.imageUrl ? (
+                          <img src={entry.imageUrl} alt={entry.itemName} className="w-10 h-10 rounded-lg object-cover" />
+                        ) : (
+                          <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-lg ${RARITY_BG[entry.itemRarity].split(' ')[0]}`}>
+                            {entry.type === 'points' ? '💰' : entry.type === 'ticket' ? '🎫' : '🎁'}
+                          </div>
+                        )}
+                        <div>
+                          <p className="text-sm text-white">{entry.itemName}</p>
+                          <p className={`text-xs font-bold ${RARITY_COLORS[entry.itemRarity]}`}>{RARITY_LABELS[entry.itemRarity]}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <p className="text-xs text-white/50">
+                          {entry.pulledAt?.seconds ? new Date(entry.pulledAt.seconds * 1000).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' }) : ''}
+                        </p>
+                        <svg className="w-4 h-4 text-white/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <Link to="/home" className="block fade-in-up fade-in-delay-3">
+              <div className="glass-card text-center py-3 text-white/80 hover:text-white hover:bg-white/10 transition-all">
+                ホームに戻る
+              </div>
+            </Link>
+          </main>
+        </div>
       </div>
 
       <style>{`
+        .glass-card {
+          background: rgba(255, 255, 255, 0.08);
+          backdrop-filter: blur(20px);
+          -webkit-backdrop-filter: blur(20px);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          border-radius: 1rem;
+          padding: 1rem;
+        }
         @keyframes bounce-subtle {
           0%, 100% { transform: translateY(0); }
           50% { transform: translateY(-3px); }

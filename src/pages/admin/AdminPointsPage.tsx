@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { collection, getDocs, query, orderBy, doc, getDoc } from 'firebase/firestore'
+import { collection, getDocs, query, orderBy, doc, getDoc, limit, startAfter, DocumentSnapshot } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { useAuth } from '@/contexts/AuthContext'
 import { grantPoints, deductPoints, clearPoints, getPointHistory, bulkGrantPoints, bulkDeductPoints } from '@/lib/pointService'
 import { exportTransactionsToCSV, exportUsersToCSV } from '@/lib/csvUtils'
 import type { PointHistory } from '@/types/firestore'
+
+const USERS_PER_PAGE = 100
 
 interface User {
   id: string
@@ -60,6 +62,13 @@ export default function AdminPointsPage() {
   const [searchClass, setSearchClass] = useState('')
   const [searchStudentNumber, setSearchStudentNumber] = useState<number | null>(null)
 
+  // Pagination
+  const [currentPage, setCurrentPage] = useState(0)
+  const [lastVisible, setLastVisible] = useState<DocumentSnapshot | null>(null)
+  const [firstVisible, setFirstVisible] = useState<DocumentSnapshot | null>(null)
+  const [hasMore, setHasMore] = useState(true)
+  const [totalCount, setTotalCount] = useState(0)
+
   // Transactions
   const [transactions, setTransactions] = useState<Array<PointHistory & { id: string }>>([])
   const [txLoading, setTxLoading] = useState(false)
@@ -73,24 +82,67 @@ export default function AdminPointsPage() {
   const [bulkAction, setBulkAction] = useState<'grant' | 'deduct'>('grant')
   const [bulkResult, setBulkResult] = useState<{ successCount: number; totalCount: number; errors?: string[] } | null>(null)
 
-  useEffect(() => {
-    const fetchUsers = async () => {
-      try {
-        const q = query(collection(db, 'users'), orderBy('username'))
-        const snap = await getDocs(q)
-        const list: User[] = []
-        snap.forEach(doc => {
-          list.push({ id: doc.id, ...doc.data() } as User)
-        })
-        setUsers(list)
-      } catch (error) {
-        console.error('Error fetching users:', error)
-      } finally {
-        setLoading(false)
+  const fetchUsers = useCallback(async (direction: 'first' | 'next' | 'prev' = 'first') => {
+    setLoading(true)
+    try {
+      let q = query(collection(db, 'users'), orderBy('username'), limit(USERS_PER_PAGE + 1))
+
+      if (direction === 'next' && lastVisible) {
+        q = query(collection(db, 'users'), orderBy('username'), startAfter(lastVisible), limit(USERS_PER_PAGE + 1))
+      } else if (direction === 'prev' && firstVisible) {
+        q = query(collection(db, 'users'), orderBy('username'), limit(USERS_PER_PAGE + 1))
+        const allSnap = await getDocs(q)
+        const targetIndex = Math.max(0, (currentPage - 1) * USERS_PER_PAGE)
+        q = query(collection(db, 'users'), orderBy('username'), limit(USERS_PER_PAGE + 1))
+        if (targetIndex > 0 && allSnap.docs[targetIndex - 1]) {
+          q = query(collection(db, 'users'), orderBy('username'), startAfter(allSnap.docs[targetIndex - 1]), limit(USERS_PER_PAGE + 1))
+        }
       }
+
+      const snap = await getDocs(q)
+      const list: User[] = []
+      const docs = snap.docs.slice(0, USERS_PER_PAGE)
+
+      docs.forEach(docSnap => {
+        list.push({ id: docSnap.id, ...docSnap.data() } as User)
+      })
+
+      setUsers(list)
+      setHasMore(snap.docs.length > USERS_PER_PAGE)
+
+      if (docs.length > 0) {
+        setFirstVisible(docs[0])
+        setLastVisible(docs[docs.length - 1])
+      }
+
+      if (direction === 'first' && totalCount === 0) {
+        const countSnap = await getDocs(query(collection(db, 'users')))
+        setTotalCount(countSnap.size)
+      }
+    } catch (error) {
+      console.error('Error fetching users:', error)
+    } finally {
+      setLoading(false)
     }
-    fetchUsers()
+  }, [currentPage, firstVisible, lastVisible, totalCount])
+
+  useEffect(() => {
+    fetchUsers('first')
   }, [])
+
+  const handleNextPage = () => {
+    if (hasMore) {
+      setCurrentPage(prev => prev + 1)
+      fetchUsers('next')
+    }
+  }
+
+  const handlePrevPage = () => {
+    if (currentPage > 0) {
+      setCurrentPage(prev => prev - 1)
+      fetchUsers('prev')
+    }
+  }
 
   // Load transactions when user selected and on transactions tab
   useEffect(() => {
@@ -726,7 +778,9 @@ export default function AdminPointsPage() {
         <div className="card">
           <div className="mb-4">
             <div className="flex items-center justify-between mb-3">
-              <h2 className="text-lg font-bold text-hatofes-white">ユーザー一覧</h2>
+              <h2 className="text-lg font-bold text-hatofes-white">
+                ユーザー一覧 ({filteredUsers.length}人{searchTerm || searchMode === 'structured' ? ' / フィルタ済' : ` / 全${totalCount}人`})
+              </h2>
               <div className="flex gap-2">
                 <button
                   onClick={() => exportUsersToCSV(filteredUsers)}
@@ -852,6 +906,28 @@ export default function AdminPointsPage() {
                   </button>
                 )
               ))}
+            </div>
+          )}
+
+          {!searchTerm && searchMode === 'text' && !loading && (
+            <div className="mt-4 pt-4 border-t border-hatofes-gray flex items-center justify-center gap-2">
+              <button
+                onClick={handlePrevPage}
+                disabled={currentPage === 0}
+                className="text-sm px-4 py-2 bg-hatofes-dark border border-hatofes-gray rounded-lg text-hatofes-white disabled:opacity-50 hover:bg-hatofes-gray-lighter"
+              >
+                前のページ
+              </button>
+              <span className="text-sm text-hatofes-gray">
+                {currentPage * USERS_PER_PAGE + 1} - {Math.min((currentPage + 1) * USERS_PER_PAGE, totalCount)} / {totalCount}人
+              </span>
+              <button
+                onClick={handleNextPage}
+                disabled={!hasMore}
+                className="text-sm px-4 py-2 bg-hatofes-dark border border-hatofes-gray rounded-lg text-hatofes-white disabled:opacity-50 hover:bg-hatofes-gray-lighter"
+              >
+                次のページ
+              </button>
             </div>
           )}
         </div>

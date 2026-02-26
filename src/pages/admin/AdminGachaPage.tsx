@@ -6,6 +6,7 @@ import { db } from '@/lib/firebase'
 import app from '@/lib/firebase'
 import { useAuth } from '@/contexts/AuthContext'
 import { Spinner } from '@/components/ui/Spinner'
+import { ImageUrlInput } from '@/components/ui/ImageUrlInput'
 import type { GachaItem, GachaRarity, GachaItemType } from '@/types/firestore'
 
 const functions = getFunctions(app)
@@ -24,12 +25,34 @@ const clearGachaTicketsFn = httpsCallable<
   { success: boolean; message: string }
 >(functions, 'clearGachaTickets')
 
+const bulkDistributeByClassFn = httpsCallable<
+  { grade?: number; classNames?: string[]; tickets?: number; points?: number; details?: string },
+  { success: boolean; message: string; successCount: number; totalCount: number; errors?: string[] }
+>(functions, 'bulkDistributeByClass')
+
 const RARITY_COLORS: Record<GachaRarity, string> = {
   common: 'bg-gray-500/20 text-gray-400 border-gray-500',
   uncommon: 'bg-green-500/20 text-green-400 border-green-500',
   rare: 'bg-blue-500/20 text-blue-400 border-blue-500',
   epic: 'bg-purple-500/20 text-purple-400 border-purple-500',
   legendary: 'bg-hatofes-accent-yellow/20 text-hatofes-accent-yellow border-hatofes-accent-yellow',
+}
+
+// Suggested weights per rarity (higher = more common)
+const RARITY_SUGGESTED_WEIGHTS: Record<GachaRarity, number> = {
+  common: 5000,      // ~50% (when balanced)
+  uncommon: 2500,    // ~25%
+  rare: 1000,        // ~10%
+  epic: 100,         // ~1%
+  legendary: 10,     // ~0.1%
+}
+
+const RARITY_LABELS: Record<GachaRarity, string> = {
+  common: 'コモン',
+  uncommon: 'アンコモン',
+  rare: 'レア',
+  epic: 'エピック',
+  legendary: 'レジェンダリー',
 }
 
 interface GachaItemWithId extends GachaItem {
@@ -47,6 +70,15 @@ interface NewGachaItem {
   imageUrl: string
 }
 
+// Calculate probability from weight
+const calculateProbability = (weight: number, totalWeight: number): string => {
+  if (totalWeight === 0) return '0%'
+  const prob = (weight / totalWeight) * 100
+  if (prob >= 1) return `${prob.toFixed(1)}%`
+  if (prob >= 0.1) return `${prob.toFixed(2)}%`
+  return `${prob.toFixed(3)}%`
+}
+
 export default function AdminGachaPage() {
   const { currentUser } = useAuth()
   const [items, setItems] = useState<GachaItemWithId[]>([])
@@ -57,11 +89,16 @@ export default function AdminGachaPage() {
     description: '',
     type: 'badge',
     rarity: 'common',
-    weight: 1000,
+    weight: RARITY_SUGGESTED_WEIGHTS.common,
     pointsValue: 0,
     ticketValue: 0,
     imageUrl: '',
   })
+
+  // Calculate total weight of active items
+  const totalActiveWeight = items
+    .filter(i => i.isActive)
+    .reduce((sum, i) => sum + (i.weight || 0), 0)
   const [editItem, setEditItem] = useState<GachaItemWithId | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
@@ -87,6 +124,15 @@ export default function AdminGachaPage() {
 
   const [searchedUser, setSearchedUser] = useState<{ id: string; username: string; email: string } | null>(null)
   const [searching, setSearching] = useState(false)
+
+  // Bulk distribution state
+  const [bulkGrade, setBulkGrade] = useState<number | 'all'>('all')
+  const [bulkClasses, setBulkClasses] = useState<string[]>([])
+  const [bulkTickets, setBulkTickets] = useState(1)
+  const [bulkPoints, setBulkPoints] = useState(0)
+  const [bulkDetails, setBulkDetails] = useState('')
+  const [bulkSubmitting, setBulkSubmitting] = useState(false)
+  const [bulkResult, setBulkResult] = useState<{ successCount: number; totalCount: number; errors?: string[] } | null>(null)
 
   useEffect(() => {
     fetchItems()
@@ -144,7 +190,7 @@ export default function AdminGachaPage() {
       }
       setItems(prev => [createdItem, ...prev])
       setShowCreate(false)
-      setNewItem({ name: '', description: '', type: 'badge', rarity: 'common', weight: 1000, pointsValue: 0, ticketValue: 0, imageUrl: '' })
+      setNewItem({ name: '', description: '', type: 'badge', rarity: 'common', weight: RARITY_SUGGESTED_WEIGHTS.common, pointsValue: 0, ticketValue: 0, imageUrl: '' })
     } catch (error) {
       console.error('Error creating item:', error)
       setMessage({ type: 'error', text: 'アイテム作成に失敗しました' })
@@ -335,6 +381,56 @@ export default function AdminGachaPage() {
     }
   }
 
+  const handleBulkDistribute = async () => {
+    if (bulkTickets <= 0 && bulkPoints <= 0) {
+      setMessage({ type: 'error', text: 'チケットまたはポイントを指定してください' })
+      return
+    }
+    if (bulkSubmitting) return
+
+    const targetDesc = bulkGrade === 'all' ? '全学年' : `${bulkGrade}年生`
+    const classDesc = bulkClasses.length === 0 ? '全クラス' : `${bulkClasses.join(', ')}組`
+    const itemDesc = []
+    if (bulkTickets > 0) itemDesc.push(`${bulkTickets}チケット`)
+    if (bulkPoints > 0) itemDesc.push(`${bulkPoints}pt`)
+
+    if (!confirm(`${targetDesc}${classDesc}に${itemDesc.join('と')}を配布しますか？`)) return
+
+    setBulkSubmitting(true)
+    setBulkResult(null)
+    try {
+      const result = await bulkDistributeByClassFn({
+        grade: bulkGrade === 'all' ? undefined : bulkGrade,
+        classNames: bulkClasses.length > 0 ? bulkClasses : undefined,
+        tickets: bulkTickets > 0 ? bulkTickets : undefined,
+        points: bulkPoints > 0 ? bulkPoints : undefined,
+        details: bulkDetails || undefined,
+      })
+      setMessage({ type: 'success', text: result.data.message })
+      setBulkResult({
+        successCount: result.data.successCount,
+        totalCount: result.data.totalCount,
+        errors: result.data.errors,
+      })
+      setBulkTickets(1)
+      setBulkPoints(0)
+      setBulkDetails('')
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : '一括配布に失敗しました'
+      setMessage({ type: 'error', text: msg })
+    } finally {
+      setBulkSubmitting(false)
+    }
+  }
+
+  const toggleBulkClass = (className: string) => {
+    setBulkClasses(prev =>
+      prev.includes(className)
+        ? prev.filter(c => c !== className)
+        : [...prev, className]
+    )
+  }
+
   return (
     <div className="min-h-screen bg-hatofes-bg">
       {/* Header */}
@@ -404,25 +500,55 @@ export default function AdminGachaPage() {
                     <label className="block text-sm text-hatofes-gray mb-1">レアリティ</label>
                     <select
                       value={newItem.rarity}
-                      onChange={e => setNewItem(prev => ({ ...prev, rarity: e.target.value as GachaRarity }))}
+                      onChange={e => {
+                        const rarity = e.target.value as GachaRarity
+                        setNewItem(prev => ({ ...prev, rarity, weight: RARITY_SUGGESTED_WEIGHTS[rarity] }))
+                      }}
                       className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white"
                     >
                       <option value="common">コモン</option>
                       <option value="uncommon">アンコモン</option>
                       <option value="rare">レア</option>
-                      <option value="epic">イピック</option>
+                      <option value="epic">エピック</option>
                       <option value="legendary">レジェンダリー</option>
                     </select>
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm text-hatofes-gray mb-1">重み（高い = 出る確率高い）</label>
-                  <input
-                    type="number"
-                    value={newItem.weight}
-                    onChange={e => setNewItem(prev => ({ ...prev, weight: parseInt(e.target.value) || 1 }))}
-                    className="w-32 bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white"
-                  />
+                  <label className="block text-sm text-hatofes-gray mb-1">
+                    排出確率
+                    <span className="text-hatofes-accent-yellow ml-2">
+                      {calculateProbability(newItem.weight, totalActiveWeight + newItem.weight)}
+                    </span>
+                  </label>
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {(Object.keys(RARITY_SUGGESTED_WEIGHTS) as GachaRarity[]).map(rarity => (
+                      <button
+                        key={rarity}
+                        type="button"
+                        onClick={() => setNewItem(prev => ({ ...prev, weight: RARITY_SUGGESTED_WEIGHTS[rarity] }))}
+                        className={`text-xs px-2 py-1 rounded border transition-all ${
+                          newItem.weight === RARITY_SUGGESTED_WEIGHTS[rarity]
+                            ? RARITY_COLORS[rarity]
+                            : 'border-hatofes-gray text-hatofes-gray hover:border-hatofes-white hover:text-hatofes-white'
+                        }`}
+                      >
+                        {RARITY_LABELS[rarity]} ({RARITY_SUGGESTED_WEIGHTS[rarity]})
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={newItem.weight}
+                      onChange={e => setNewItem(prev => ({ ...prev, weight: parseInt(e.target.value) || 1 }))}
+                      className="w-32 bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white"
+                      min={1}
+                    />
+                    <span className="text-xs text-hatofes-gray">
+                      (高い = 出やすい)
+                    </span>
+                  </div>
                 </div>
                 {newItem.type === 'points' && (
                   <div>
@@ -447,19 +573,13 @@ export default function AdminGachaPage() {
                   </div>
                 )}
                 <div>
-                  <label className="block text-sm text-hatofes-gray mb-1">画像URL（任意）</label>
-                  <input
-                    type="url"
+                  <label className="block text-sm text-hatofes-gray mb-1">画像（任意・Google Drive対応）</label>
+                  <ImageUrlInput
                     value={newItem.imageUrl}
-                    onChange={e => setNewItem(prev => ({ ...prev, imageUrl: e.target.value }))}
-                    placeholder="https://example.com/image.png"
-                    className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white placeholder-hatofes-gray/50"
+                    onChange={url => setNewItem(prev => ({ ...prev, imageUrl: url }))}
+                    showPreview={true}
+                    previewSize="md"
                   />
-                  {newItem.imageUrl && (
-                    <div className="mt-2">
-                      <img src={newItem.imageUrl} alt="プレビュー" className="w-20 h-20 rounded-lg object-cover border border-hatofes-gray" />
-                    </div>
-                  )}
                 </div>
               </div>
               <div className="flex gap-2 mt-6">
@@ -515,25 +635,55 @@ export default function AdminGachaPage() {
                     <label className="block text-sm text-hatofes-gray mb-1">レアリティ</label>
                     <select
                       value={editItem.rarity}
-                      onChange={e => setEditItem(prev => prev && { ...prev, rarity: e.target.value as GachaRarity })}
+                      onChange={e => {
+                        const rarity = e.target.value as GachaRarity
+                        setEditItem(prev => prev && { ...prev, rarity, weight: RARITY_SUGGESTED_WEIGHTS[rarity] })
+                      }}
                       className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white"
                     >
                       <option value="common">コモン</option>
                       <option value="uncommon">アンコモン</option>
                       <option value="rare">レア</option>
-                      <option value="epic">イピック</option>
+                      <option value="epic">エピック</option>
                       <option value="legendary">レジェンダリー</option>
                     </select>
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm text-hatofes-gray mb-1">重み（高い = 出る確率高い）</label>
-                  <input
-                    type="number"
-                    value={editItem.weight}
-                    onChange={e => setEditItem(prev => prev && { ...prev, weight: parseInt(e.target.value) || 1 })}
-                    className="w-32 bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white"
-                  />
+                  <label className="block text-sm text-hatofes-gray mb-1">
+                    排出確率
+                    <span className="text-hatofes-accent-yellow ml-2">
+                      {calculateProbability(editItem.weight, totalActiveWeight - (editItem.isActive ? (items.find(i => i.id === editItem.id)?.weight || 0) : 0) + editItem.weight)}
+                    </span>
+                  </label>
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {(Object.keys(RARITY_SUGGESTED_WEIGHTS) as GachaRarity[]).map(rarity => (
+                      <button
+                        key={rarity}
+                        type="button"
+                        onClick={() => setEditItem(prev => prev && { ...prev, weight: RARITY_SUGGESTED_WEIGHTS[rarity] })}
+                        className={`text-xs px-2 py-1 rounded border transition-all ${
+                          editItem.weight === RARITY_SUGGESTED_WEIGHTS[rarity]
+                            ? RARITY_COLORS[rarity]
+                            : 'border-hatofes-gray text-hatofes-gray hover:border-hatofes-white hover:text-hatofes-white'
+                        }`}
+                      >
+                        {RARITY_LABELS[rarity]} ({RARITY_SUGGESTED_WEIGHTS[rarity]})
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={editItem.weight}
+                      onChange={e => setEditItem(prev => prev && { ...prev, weight: parseInt(e.target.value) || 1 })}
+                      className="w-32 bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white"
+                      min={1}
+                    />
+                    <span className="text-xs text-hatofes-gray">
+                      (高い = 出やすい)
+                    </span>
+                  </div>
                 </div>
                 {editItem.type === 'points' && (
                   <div>
@@ -558,19 +708,13 @@ export default function AdminGachaPage() {
                   </div>
                 )}
                 <div>
-                  <label className="block text-sm text-hatofes-gray mb-1">画像URL（任意）</label>
-                  <input
-                    type="url"
+                  <label className="block text-sm text-hatofes-gray mb-1">画像（任意・Google Drive対応）</label>
+                  <ImageUrlInput
                     value={editItem.imageUrl || ''}
-                    onChange={e => setEditItem(prev => prev && { ...prev, imageUrl: e.target.value })}
-                    placeholder="https://example.com/image.png"
-                    className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white placeholder-hatofes-gray/50"
+                    onChange={url => setEditItem(prev => prev && { ...prev, imageUrl: url })}
+                    showPreview={true}
+                    previewSize="md"
                   />
-                  {editItem.imageUrl && (
-                    <div className="mt-2">
-                      <img src={editItem.imageUrl} alt="プレビュー" className="w-20 h-20 rounded-lg object-cover border border-hatofes-gray" />
-                    </div>
-                  )}
                 </div>
               </div>
               <div className="flex gap-2 mt-6">
@@ -585,7 +729,16 @@ export default function AdminGachaPage() {
 
         {/* Item List */}
         <div className="card">
-          <h2 className="text-lg font-bold text-hatofes-white mb-4">アイテム一覧</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-bold text-hatofes-white">アイテム一覧</h2>
+            {!loading && items.length > 0 && (
+              <div className="text-xs text-hatofes-gray">
+                有効アイテム: <span className="text-hatofes-white">{items.filter(i => i.isActive).length}</span>件
+                <span className="mx-2">|</span>
+                総重み: <span className="text-hatofes-accent-yellow">{totalActiveWeight.toLocaleString()}</span>
+              </div>
+            )}
+          </div>
           {loading ? (
             <div className="flex justify-center py-8"><Spinner size="lg" /></div>
           ) : items.length === 0 ? (
@@ -602,7 +755,7 @@ export default function AdminGachaPage() {
                       <div className="flex items-center gap-2 flex-wrap">
                         <h3 className="text-hatofes-white font-medium">{item.name}</h3>
                         <span className={`text-xs px-2 py-0.5 rounded border ${RARITY_COLORS[item.rarity]}`}>
-                          {item.rarity}
+                          {RARITY_LABELS[item.rarity]}
                         </span>
                         <span className="text-xs px-2 py-0.5 rounded bg-hatofes-bg text-hatofes-gray">
                           {item.type}
@@ -613,7 +766,10 @@ export default function AdminGachaPage() {
                       </div>
                       <p className="text-sm text-hatofes-gray mt-1">{item.description}</p>
                       <p className="text-xs text-hatofes-gray mt-1">
-                        重み: {item.weight}
+                        確率: <span className={item.isActive ? 'text-hatofes-accent-yellow' : ''}>
+                          {item.isActive ? calculateProbability(item.weight, totalActiveWeight) : '(非公開)'}
+                        </span>
+                        <span className="ml-2 text-hatofes-gray/60">(重み: {item.weight})</span>
                         {item.type === 'points' && item.pointsValue ? ` / ポイント: ${item.pointsValue}` : ''}
                         {item.type === 'ticket' && item.ticketValue ? ` / チケット: ${item.ticketValue}` : ''}
                       </p>
@@ -905,6 +1061,151 @@ export default function AdminGachaPage() {
               </button>
             </div>
             <p className="text-xs text-red-400">⚠️ この操作は取り消せません。慎重に実行してください。</p>
+          </div>
+        </div>
+
+        {/* Bulk Distribution Section */}
+        <div className="card border-2 border-hatofes-accent-yellow/30">
+          <h2 className="text-lg font-bold text-hatofes-accent-yellow mb-4">📦 一括配布（学年・クラス）</h2>
+          <div className="space-y-4">
+            {/* 学年選択 */}
+            <div>
+              <label className="block text-sm text-hatofes-gray mb-2">対象学年</label>
+              <div className="flex gap-2 flex-wrap">
+                <button
+                  onClick={() => setBulkGrade('all')}
+                  className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${
+                    bulkGrade === 'all'
+                      ? 'bg-hatofes-accent-yellow text-black'
+                      : 'bg-hatofes-dark border border-hatofes-gray text-hatofes-white hover:border-hatofes-accent-yellow'
+                  }`}
+                >
+                  全学年
+                </button>
+                {[1, 2, 3].map(g => (
+                  <button
+                    key={g}
+                    onClick={() => setBulkGrade(g)}
+                    className={`w-12 h-10 rounded-lg text-sm font-bold transition-all ${
+                      bulkGrade === g
+                        ? 'bg-hatofes-accent-yellow text-black'
+                        : 'bg-hatofes-dark border border-hatofes-gray text-hatofes-white hover:border-hatofes-accent-yellow'
+                    }`}
+                  >
+                    {g}年
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* クラス選択 */}
+            <div>
+              <label className="block text-sm text-hatofes-gray mb-2">
+                対象クラス
+                <span className="text-xs ml-2 text-hatofes-gray/60">（未選択で全クラス）</span>
+              </label>
+              <div className="flex gap-1.5 flex-wrap">
+                {CLASS_OPTIONS.map(c => (
+                  <button
+                    key={c}
+                    onClick={() => toggleBulkClass(c)}
+                    className={`w-9 h-9 rounded-full text-sm font-bold transition-all ${
+                      bulkClasses.includes(c)
+                        ? 'bg-hatofes-accent-yellow text-black'
+                        : 'bg-hatofes-dark border border-hatofes-gray text-hatofes-white hover:border-hatofes-accent-yellow'
+                    }`}
+                  >
+                    {c}
+                  </button>
+                ))}
+                {bulkClasses.length > 0 && (
+                  <button
+                    onClick={() => setBulkClasses([])}
+                    className="px-3 py-1 rounded-lg text-xs text-hatofes-gray hover:text-hatofes-white border border-hatofes-gray hover:border-hatofes-white transition-colors"
+                  >
+                    クリア
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* 対象プレビュー */}
+            <div className="bg-hatofes-dark rounded-lg px-3 py-2 text-sm">
+              <span className="text-hatofes-gray">対象: </span>
+              <span className="text-hatofes-accent-yellow font-bold">
+                {bulkGrade === 'all' ? '全学年' : `${bulkGrade}年生`}
+                {' / '}
+                {bulkClasses.length === 0 ? '全クラス' : `${bulkClasses.join(', ')}組`}
+              </span>
+            </div>
+
+            {/* チケット・ポイント入力 */}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-hatofes-gray mb-1">🎫 チケット</label>
+                <input
+                  type="number"
+                  value={bulkTickets}
+                  onChange={e => setBulkTickets(parseInt(e.target.value) || 0)}
+                  min={0}
+                  className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-hatofes-gray mb-1">💰 ポイント</label>
+                <input
+                  type="number"
+                  value={bulkPoints}
+                  onChange={e => setBulkPoints(parseInt(e.target.value) || 0)}
+                  min={0}
+                  className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white"
+                />
+              </div>
+            </div>
+
+            {/* 備考 */}
+            <div>
+              <label className="block text-sm text-hatofes-gray mb-1">備考（任意）</label>
+              <input
+                type="text"
+                value={bulkDetails}
+                onChange={e => setBulkDetails(e.target.value)}
+                placeholder="例: 文化祭参加ボーナス"
+                className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white placeholder-hatofes-gray"
+              />
+            </div>
+
+            {/* 結果表示 */}
+            {bulkResult && (
+              <div className="bg-hatofes-dark p-4 rounded-lg">
+                <p className="text-hatofes-white font-medium mb-2">
+                  配布完了: {bulkResult.successCount} / {bulkResult.totalCount}人
+                </p>
+                {bulkResult.errors && bulkResult.errors.length > 0 && (
+                  <div className="mt-2">
+                    <p className="text-red-400 text-sm font-medium mb-1">エラー:</p>
+                    <div className="max-h-32 overflow-y-auto space-y-1">
+                      {bulkResult.errors.map((err, i) => (
+                        <p key={i} className="text-xs text-hatofes-gray">{err}</p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 配布ボタン */}
+            <button
+              onClick={handleBulkDistribute}
+              disabled={bulkSubmitting || (bulkTickets <= 0 && bulkPoints <= 0)}
+              className="btn-main w-full py-3 text-lg disabled:opacity-50"
+            >
+              {bulkSubmitting ? <Spinner size="sm" className="mx-auto" /> : '🚀 一括配布を実行'}
+            </button>
+
+            <p className="text-xs text-hatofes-gray text-center">
+              この操作は対象の全ユーザーに即座にチケット・ポイントを付与します
+            </p>
           </div>
         </div>
       </main>

@@ -383,7 +383,10 @@ export default function HomePage() {
                   <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
                   リアルタイム同期中
                 </span>
-                <span className="text-hatofes-accent-yellow font-din tracking-wide">Show detail →</span>
+                <span className="text-hatofes-accent-yellow font-din tracking-wide flex items-center gap-1">
+                  Show detail
+                  <ChevronIcon size={14} color="#FFC300" />
+                </span>
               </div>
             </section>
           </Link>
@@ -423,7 +426,10 @@ export default function HomePage() {
                         {title}
                       </span>
                     </div>
-                    <span className="text-hatofes-gray text-xs font-din tracking-wide">Show detail →</span>
+                    <span className="text-hatofes-gray text-xs font-din tracking-wide flex items-center gap-1">
+                      Show detail
+                      <ChevronIcon size={14} color="#6B7280" />
+                    </span>
                   </div>
                   {progress && (
                     <div className="w-full h-3 bg-hatofes-dark rounded-full overflow-hidden">
@@ -656,10 +662,10 @@ export default function HomePage() {
 
           {/* Gacha Banner */}
           <Link to="/gacha" className="block animate-card opacity-0">
-            <section className="card hover:ring-1 hover:ring-hatofes-accent-yellow transition-all">
+            <section className="card hover:ring-1 hover:ring-hatofes-accent-yellow transition-all bg-gradient-to-r from-hatofes-accent-yellow/10 to-hatofes-accent-orange/10 border-hatofes-accent-yellow/30">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(255, 195, 0, 0.1)' }}>
+                  <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(255, 195, 0, 0.15)' }}>
                     <GachaIcon size={28} />
                   </div>
                   <div>
@@ -695,10 +701,10 @@ export default function HomePage() {
           {/* Tetris Banner - 教員以外のみ表示 */}
           {userData.role !== 'teacher' && (
             <Link to="/tetris" className="block animate-card opacity-0">
-              <section className="card hover:ring-1 hover:ring-hatofes-accent-yellow transition-all">
+              <section className="card hover:ring-1 hover:ring-cyan-500 transition-all bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border-cyan-500/30">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(255, 195, 0, 0.1)' }}>
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(0, 212, 255, 0.15)' }}>
                       <TetrisIcon size={28} />
                     </div>
                     <div>

@@ -6,6 +6,7 @@ import { db } from '@/lib/firebase'
 import app from '@/lib/firebase'
 import AppHeader from '@/components/layout/AppHeader'
 import { useAuth } from '@/contexts/AuthContext'
+import { useTheme } from '@/contexts/ThemeContext'
 import { Spinner } from '@/components/ui/Spinner'
 import { wordListA, wordListB, wordListC } from '@/mocks/wordLists'
 
@@ -20,9 +21,9 @@ type RenameStep = 'idle' | 'word1' | 'word2' | 'word3' | 'confirm' | 'submitting
 
 export default function SettingsPage() {
   const { currentUser, userData, refreshUserData } = useAuth()
+  const { theme, toggleTheme } = useTheme()
 
   const [notificationsEnabled, setNotificationsEnabled] = useState(true)
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark')
   const [feedbackMessage, setFeedbackMessage] = useState('')
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false)
@@ -36,7 +37,6 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!userData) return
     setNotificationsEnabled(userData.notificationsEnabled ?? true)
-    setTheme(userData.theme ?? 'dark')
   }, [userData])
 
   const usernameChangeCount = userData?.usernameChangeCount ?? 0
@@ -52,19 +52,6 @@ export default function SettingsPage() {
     } catch (error) {
       console.error('Error updating notifications setting:', error)
       setNotificationsEnabled(!newVal)
-    }
-  }
-
-  const handleToggleTheme = async () => {
-    if (!currentUser) return
-    const newTheme: 'dark' | 'light' = theme === 'dark' ? 'light' : 'dark'
-    setTheme(newTheme)
-    localStorage.setItem('hatofes-theme', newTheme)
-    try {
-      await updateDoc(doc(db, 'users', currentUser.uid), { theme: newTheme })
-    } catch (error) {
-      console.error('Error updating theme setting:', error)
-      setTheme(theme)
     }
   }
 
@@ -119,7 +106,7 @@ export default function SettingsPage() {
 
   if (!userData) {
     return (
-      <div className="min-h-screen bg-hatofes-bg flex items-center justify-center">
+      <div className="min-h-screen theme-bg flex items-center justify-center">
         <Spinner size="lg" />
       </div>
     )
@@ -231,7 +218,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-hatofes-bg pb-8">
+    <div className="min-h-screen theme-bg pb-8">
       {/* Word selection / confirm modal */}
       {renderWordModal()}
 
@@ -267,15 +254,19 @@ export default function SettingsPage() {
         <section className="card">
           <h2 className="text-lg font-bold text-hatofes-white mb-4">表示設定</h2>
           <div className="flex items-center justify-between">
-            <span className="text-hatofes-white">ダーク / ライト モード</span>
+            <div className="flex items-center gap-2">
+              <span className="text-xl">{theme === 'dark' ? '🌙' : '☀️'}</span>
+              <span className="text-hatofes-white">
+                {theme === 'dark' ? 'ダークモード' : 'ライトモード'}
+              </span>
+            </div>
             <button
-              onClick={handleToggleTheme}
+              onClick={toggleTheme}
               className={`relative w-12 h-6 rounded-full transition-colors ${theme === 'light' ? 'bg-hatofes-accent-yellow' : 'bg-hatofes-gray'}`}
             >
               <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${theme === 'light' ? 'translate-x-6' : 'translate-x-0'}`} />
             </button>
           </div>
-          <p className="text-xs text-hatofes-gray mt-2">現在: {theme === 'dark' ? 'ダーク' : 'ライト'} モード（ライトモードの完全対応は近日）</p>
         </section>
 
         {/* Section 3: 表示名変更 */}

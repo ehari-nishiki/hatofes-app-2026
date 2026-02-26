@@ -23,18 +23,40 @@ interface Survey {
   responseCount?: number
 }
 
+type ExtendedQuestionType =
+  | 'multiple_choice'
+  | 'text'
+  | 'rating'
+  | 'image_choice'
+  | 'slider'
+  | 'ranking'
+  | 'checkbox'
+  | 'long_text'
+  | 'datetime'
+
+interface NewQuestion {
+  type: ExtendedQuestionType
+  question: string
+  options?: string[]
+  required: boolean
+  imageUrl?: string
+  imageOptions?: Array<{ url: string; label: string }>
+  minValue?: number
+  maxValue?: number
+  step?: number
+  rankingItems?: string[]
+  minRating?: number
+  maxRating?: number
+  maxLength?: number
+  placeholder?: string
+}
+
 interface NewSurvey {
   title: string
   description: string
   points: number
   category: 'task' | 'mission'
-  questions: Array<{
-    type: 'multiple_choice' | 'text' | 'rating'
-    question: string
-    options?: string[]
-    required: boolean
-    imageUrl?: string
-  }>
+  questions: NewQuestion[]
 }
 
 export default function AdminSurveysPage() {
@@ -485,16 +507,23 @@ export default function AdminSurveysPage() {
                         onChange={e => updateQuestion(i, 'type', e.target.value)}
                         className="bg-hatofes-bg border border-hatofes-gray rounded px-2 py-1 text-hatofes-white text-sm mb-2"
                       >
-                        <option value="multiple_choice">選択式</option>
-                        <option value="text">テキスト</option>
+                        <option value="multiple_choice">選択式（単一）</option>
+                        <option value="checkbox">選択式（複数）</option>
+                        <option value="text">テキスト（短文）</option>
+                        <option value="long_text">テキスト（長文）</option>
                         <option value="rating">評価（5段階）</option>
+                        <option value="slider">スライダー</option>
+                        <option value="image_choice">画像選択</option>
+                        <option value="ranking">順位付け</option>
+                        <option value="datetime">日時選択</option>
                       </select>
                       <ImageUploader
                         imageUrl={q.imageUrl || ''}
                         onChange={url => updateQuestion(i, 'imageUrl', url)}
                         label="質問画像"
                       />
-                      {q.type === 'multiple_choice' && (
+                      {/* Options for multiple_choice and checkbox */}
+                      {(q.type === 'multiple_choice' || q.type === 'checkbox') && (
                         <div className="space-y-1">
                           {q.options?.map((opt, j) => (
                             <div key={j} className="flex items-center gap-1">
@@ -528,6 +557,142 @@ export default function AdminSurveysPage() {
                           ))}
                           <button onClick={() => addOption(i)} className="text-xs text-hatofes-accent-yellow">
                             + 選択肢を追加
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Slider settings */}
+                      {q.type === 'slider' && (
+                        <div className="grid grid-cols-3 gap-2 mt-2">
+                          <div>
+                            <label className="text-xs text-hatofes-gray">最小値</label>
+                            <input
+                              type="number"
+                              value={q.minValue || 0}
+                              onChange={e => updateQuestion(i, 'minValue', parseInt(e.target.value))}
+                              className="w-full bg-hatofes-bg border border-hatofes-gray rounded px-2 py-1 text-hatofes-white text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs text-hatofes-gray">最大値</label>
+                            <input
+                              type="number"
+                              value={q.maxValue || 100}
+                              onChange={e => updateQuestion(i, 'maxValue', parseInt(e.target.value))}
+                              className="w-full bg-hatofes-bg border border-hatofes-gray rounded px-2 py-1 text-hatofes-white text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs text-hatofes-gray">ステップ</label>
+                            <input
+                              type="number"
+                              value={q.step || 1}
+                              onChange={e => updateQuestion(i, 'step', parseInt(e.target.value))}
+                              className="w-full bg-hatofes-bg border border-hatofes-gray rounded px-2 py-1 text-hatofes-white text-sm"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Ranking items */}
+                      {q.type === 'ranking' && (
+                        <div className="space-y-1 mt-2">
+                          <label className="text-xs text-hatofes-gray">順位付けする項目</label>
+                          {(q.rankingItems || ['', '']).map((item, j) => (
+                            <div key={j} className="flex items-center gap-1">
+                              <input
+                                type="text"
+                                value={item}
+                                onChange={e => {
+                                  const items = [...(q.rankingItems || ['', ''])]
+                                  items[j] = e.target.value
+                                  updateQuestion(i, 'rankingItems', items)
+                                }}
+                                placeholder={`項目 ${j + 1}`}
+                                className="flex-1 bg-hatofes-bg border border-hatofes-gray rounded px-2 py-1 text-hatofes-white text-sm"
+                              />
+                              {(q.rankingItems?.length || 2) > 2 && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const items = [...(q.rankingItems || [])].filter((_, idx) => idx !== j)
+                                    updateQuestion(i, 'rankingItems', items)
+                                  }}
+                                  className="text-red-400 hover:text-red-300 p-1"
+                                >
+                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                  </svg>
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                          <button
+                            onClick={() => {
+                              const items = [...(q.rankingItems || ['', '']), '']
+                              updateQuestion(i, 'rankingItems', items)
+                            }}
+                            className="text-xs text-hatofes-accent-yellow"
+                          >
+                            + 項目を追加
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Image choice options */}
+                      {q.type === 'image_choice' && (
+                        <div className="space-y-2 mt-2">
+                          <label className="text-xs text-hatofes-gray">画像選択肢</label>
+                          {(q.imageOptions || [{ url: '', label: '' }, { url: '', label: '' }]).map((opt, j) => (
+                            <div key={j} className="flex items-center gap-2 bg-hatofes-bg p-2 rounded">
+                              <div className="flex-1 space-y-1">
+                                <input
+                                  type="text"
+                                  value={opt.url}
+                                  onChange={e => {
+                                    const opts = [...(q.imageOptions || [{ url: '', label: '' }, { url: '', label: '' }])]
+                                    opts[j] = { ...opts[j], url: e.target.value }
+                                    updateQuestion(i, 'imageOptions', opts)
+                                  }}
+                                  placeholder="画像URL"
+                                  className="w-full bg-hatofes-dark border border-hatofes-gray rounded px-2 py-1 text-hatofes-white text-xs"
+                                />
+                                <input
+                                  type="text"
+                                  value={opt.label}
+                                  onChange={e => {
+                                    const opts = [...(q.imageOptions || [{ url: '', label: '' }, { url: '', label: '' }])]
+                                    opts[j] = { ...opts[j], label: e.target.value }
+                                    updateQuestion(i, 'imageOptions', opts)
+                                  }}
+                                  placeholder="ラベル"
+                                  className="w-full bg-hatofes-dark border border-hatofes-gray rounded px-2 py-1 text-hatofes-white text-xs"
+                                />
+                              </div>
+                              {(q.imageOptions?.length || 2) > 2 && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const opts = [...(q.imageOptions || [])].filter((_, idx) => idx !== j)
+                                    updateQuestion(i, 'imageOptions', opts)
+                                  }}
+                                  className="text-red-400 hover:text-red-300 p-1"
+                                >
+                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                  </svg>
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                          <button
+                            onClick={() => {
+                              const opts = [...(q.imageOptions || [{ url: '', label: '' }, { url: '', label: '' }]), { url: '', label: '' }]
+                              updateQuestion(i, 'imageOptions', opts)
+                            }}
+                            className="text-xs text-hatofes-accent-yellow"
+                          >
+                            + 画像を追加
                           </button>
                         </div>
                       )}

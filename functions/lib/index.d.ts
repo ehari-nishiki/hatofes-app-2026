@@ -94,6 +94,11 @@ export declare const registerTetrisRanking: functions.https.CallableFunction<any
     success: boolean;
     message: string;
 }>, unknown>;
+export declare const resetTetrisRankings: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    message: string;
+    deletedCount: number;
+}>, unknown>;
 export declare const submitTetrisScore: functions.https.CallableFunction<any, Promise<{
     success: boolean;
     pointsAwarded: number;
@@ -119,6 +124,19 @@ export declare const pullGacha: functions.https.CallableFunction<any, Promise<{
         ticketValue: number | null;
         imageUrl: string | null;
     };
+}>, unknown>;
+export declare const pullGachaBatch: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    items: {
+        id: string;
+        name: string;
+        description: string;
+        rarity: string;
+        type: string;
+        pointsValue: number | null;
+        ticketValue: number | null;
+        imageUrl: string | null;
+    }[];
 }>, unknown>;
 /**
  * 管理画面ダッシュボード用の統計情報を定期的に更新
@@ -190,5 +208,70 @@ export declare const listPrivilegedUsers: functions.https.CallableFunction<any, 
 export declare const claimNotificationPoints: functions.https.CallableFunction<any, Promise<{
     success: boolean;
     message: string;
+}>, unknown>;
+/**
+ * Automatically increment readCount when a user marks a notification as read
+ * Triggered when: notifications/{notifId}/readStatus/{userId} is created
+ */
+export declare const updateNotificationReadCount: functions.CloudFunction<functions.firestore.FirestoreEvent<functions.firestore.QueryDocumentSnapshot | undefined, {
+    userId: string;
+    notifId: string;
+}>>;
+/**
+ * Migration function to convert readBy arrays to readStatus subcollections
+ * This is a one-time migration function for existing notifications
+ * Call via: firebase functions:call migrateNotificationReadStatus
+ */
+export declare const migrateNotificationReadStatus: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    migrated: number;
+    errors: number;
+    message: string;
+}>, unknown>;
+/**
+ * Daily scheduled function to aggregate point history
+ * Runs at midnight JST every day
+ * Creates daily summaries in pointAggregations/{userId}/daily/{YYYY-MM-DD}
+ */
+export declare const aggregatePointHistory: functions.scheduler.ScheduleFunction;
+/**
+ * Manual trigger for point aggregation (for testing or backfill)
+ * Admin-only callable function
+ */
+export declare const triggerPointAggregation: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    date: string;
+    processedUsers: number;
+    message: string;
+}>, unknown>;
+/**
+ * Track class membership changes when a user's grade/class is updated
+ * Updates memberIds array in classes collection for efficient member lookup
+ */
+export declare const updateClassMembers: functions.CloudFunction<functions.firestore.FirestoreEvent<functions.firestore.Change<functions.firestore.DocumentSnapshot> | undefined, {
+    userId: string;
+}>>;
+/**
+ * Initialize memberIds for all existing classes
+ * One-time migration function
+ */
+export declare const initializeClassMembers: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    classesUpdated: number;
+    totalUsers: number;
+    message: string;
+}>, unknown>;
+export declare const bulkDistributeByClass: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    message: string;
+    successCount: number;
+    totalCount: number;
+    errors?: undefined;
+} | {
+    success: boolean;
+    message: string;
+    successCount: number;
+    totalCount: number;
+    errors: string[] | undefined;
 }>, unknown>;
 //# sourceMappingURL=index.d.ts.map

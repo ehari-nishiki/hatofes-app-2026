@@ -8,6 +8,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { PointRewardModal } from '@/components/ui/PointRewardModal'
 import { TetrisLoading } from '@/components/ui/TetrisLoading'
 import { SkeletonCard } from '@/components/ui/SkeletonLoader'
+import { TetrisIcon } from '@/components/ui/Icon'
 import { TetrisScore } from '@/types/firestore'
 
 const fns = getFunctions(app)
@@ -651,39 +652,42 @@ export default function TetrisPage() {
         {/* page header */}
         <div className="mb-3">
           <h1 className="text-lg font-bold text-hatofes-white flex items-center gap-2 mb-3">
-            <span>🧱</span> テトリス
+            <TetrisIcon size={24} /> テトリス
           </h1>
           {/* タブ切り替え */}
           <div className="flex border-b border-hatofes-gray/30">
             <button
               onClick={() => setActiveTab('game')}
-              className={`flex-1 py-2 text-sm font-medium transition-colors ${
+              className={`flex-1 py-2 text-sm font-medium transition-colors flex items-center justify-center gap-1 ${
                 activeTab === 'game'
                   ? 'text-hatofes-accent-yellow border-b-2 border-hatofes-accent-yellow'
                   : 'text-hatofes-gray hover:text-hatofes-white'
               }`}
             >
-              🎮 ゲーム
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M21 6H3c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-10 7H8v3H6v-3H3v-2h3V8h2v3h3v2zm4.5 2c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm4-3c-.83 0-1.5-.67-1.5-1.5S18.67 9 19.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>
+              ゲーム
             </button>
             <button
               onClick={() => setActiveTab('ranking')}
-              className={`flex-1 py-2 text-sm font-medium transition-colors ${
+              className={`flex-1 py-2 text-sm font-medium transition-colors flex items-center justify-center gap-1 ${
                 activeTab === 'ranking'
                   ? 'text-hatofes-accent-orange border-b-2 border-hatofes-accent-orange'
                   : 'text-hatofes-gray hover:text-hatofes-white'
               }`}
             >
-              🏆 ランキング
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94.63 1.5 1.98 2.63 3.61 2.96V19H7v2h10v-2h-4v-3.1c1.63-.33 2.98-1.46 3.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/></svg>
+              ランキング
             </button>
             <button
               onClick={() => setActiveTab('rules')}
-              className={`flex-1 py-2 text-sm font-medium transition-colors ${
+              className={`flex-1 py-2 text-sm font-medium transition-colors flex items-center justify-center gap-1 ${
                 activeTab === 'rules'
                   ? 'text-hatofes-accent-yellow border-b-2 border-hatofes-accent-yellow'
                   : 'text-hatofes-gray hover:text-hatofes-white'
               }`}
             >
-              📖 ルール
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z"/></svg>
+              ルール
             </button>
           </div>
         </div>
@@ -691,7 +695,10 @@ export default function TetrisPage() {
         {/* ── ランキングタブ ── */}
         {activeTab === 'ranking' && (
           <section className="card mb-3 text-sm">
-            <h3 className="font-bold text-hatofes-white mb-3 flex items-center gap-2"><span>🏆</span> ハイスコアランキング TOP10</h3>
+            <h3 className="font-bold text-hatofes-white mb-3 flex items-center gap-2">
+              <svg className="w-5 h-5 text-hatofes-accent-yellow" viewBox="0 0 24 24" fill="currentColor"><path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94.63 1.5 1.98 2.63 3.61 2.96V19H7v2h10v-2h-4v-3.1c1.63-.33 2.98-1.46 3.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/></svg>
+              ハイスコアランキング TOP10
+            </h3>
             {rankingsLoading ? (
               <SkeletonCard count={5} />
             ) : rankings.length === 0 ? (
@@ -746,7 +753,10 @@ export default function TetrisPage() {
           <section className="card mb-3 text-sm space-y-4">
 
             <div>
-              <h3 className="font-bold text-hatofes-white mb-1.5 flex items-center gap-1.5"><span>🎮</span> 遊び方</h3>
+              <h3 className="font-bold text-hatofes-white mb-1.5 flex items-center gap-1.5">
+                <svg className="w-4 h-4 text-hatofes-accent-yellow" viewBox="0 0 24 24" fill="currentColor"><path d="M21 6H3c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-10 7H8v3H6v-3H3v-2h3V8h2v3h3v2zm4.5 2c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm4-3c-.83 0-1.5-.67-1.5-1.5S18.67 9 19.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>
+                遊び方
+              </h3>
               <p className="text-hatofes-gray leading-relaxed">
                 上から落ちてくるブロックを左右に移動・回転させて、横の一列を埋めると行が消える。<br />
                 上まで詰まったらゲームオーバー。できるだけ多く行を消して高いスコアを狙おう！
@@ -760,7 +770,10 @@ export default function TetrisPage() {
             </div>
 
             <div>
-              <h3 className="font-bold text-hatofes-white mb-2 flex items-center gap-1.5"><span>⌨️</span> 操作方法</h3>
+              <h3 className="font-bold text-hatofes-white mb-2 flex items-center gap-1.5">
+                <svg className="w-4 h-4 text-hatofes-accent-yellow" viewBox="0 0 24 24" fill="currentColor"><path d="M20 5H4c-1.1 0-1.99.9-1.99 2L2 17c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z"/></svg>
+                操作方法
+              </h3>
               <div className="bg-hatofes-dark rounded-xl p-3 space-y-3">
                 <div>
                   <p className="text-xs text-hatofes-accent-yellow font-bold mb-1.5">矢印キー操作</p>
@@ -803,7 +816,10 @@ export default function TetrisPage() {
             </div>
 
             <div>
-              <h3 className="font-bold text-hatofes-white mb-2 flex items-center gap-1.5"><span>📊</span> スコア計算</h3>
+              <h3 className="font-bold text-hatofes-white mb-2 flex items-center gap-1.5">
+                <svg className="w-4 h-4 text-hatofes-accent-yellow" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
+                スコア計算
+              </h3>
               <div className="bg-hatofes-dark rounded-xl overflow-hidden">
                 <table className="w-full text-center text-sm">
                   <thead>
@@ -830,7 +846,10 @@ export default function TetrisPage() {
             </div>
 
             <div>
-              <h3 className="font-bold text-hatofes-white mb-2 flex items-center gap-1.5"><span>🏆</span> 鳩ポイント報酬</h3>
+              <h3 className="font-bold text-hatofes-white mb-2 flex items-center gap-1.5">
+                <svg className="w-4 h-4 text-hatofes-accent-yellow" viewBox="0 0 24 24" fill="currentColor"><path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94.63 1.5 1.98 2.63 3.61 2.96V19H7v2h10v-2h-4v-3.1c1.63-.33 2.98-1.46 3.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/></svg>
+                鳩ポイント報酬
+              </h3>
               <div className="bg-hatofes-dark rounded-xl overflow-hidden">
                 <table className="w-full text-center text-sm">
                   <thead>
@@ -865,7 +884,9 @@ export default function TetrisPage() {
         {activeTab === 'game' && !gameStarted && (
           <div className="card text-center py-8">
             <div className="mb-6">
-              <span className="text-6xl block mb-4">🧱</span>
+              <div className="flex justify-center mb-4">
+                <TetrisIcon size={64} />
+              </div>
               <h2 className="text-2xl font-bold text-hatofes-white mb-2">テトリス</h2>
               <p className="text-hatofes-gray text-sm">行を消してポイントをゲット！</p>
             </div>
@@ -882,9 +903,10 @@ export default function TetrisPage() {
 
             <button
               onClick={startGame}
-              className="btn-main px-12 py-4 text-lg font-bold bg-gradient-to-r from-hatofes-accent-yellow to-hatofes-accent-orange"
+              className="btn-main px-12 py-4 text-lg font-bold bg-gradient-to-r from-hatofes-accent-yellow to-hatofes-accent-orange flex items-center justify-center gap-2 mx-auto"
             >
-              🎮 ゲームスタート
+              <svg className="w-6 h-6" viewBox="0 0 24 24" fill="currentColor"><path d="M21 6H3c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-10 7H8v3H6v-3H3v-2h3V8h2v3h3v2zm4.5 2c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm4-3c-.83 0-1.5-.67-1.5-1.5S18.67 9 19.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>
+              ゲームスタート
             </button>
 
             <p className="text-xs text-hatofes-gray mt-4">
@@ -900,7 +922,7 @@ export default function TetrisPage() {
           <div className="card mb-2 py-2 px-3 bg-gradient-to-r from-hatofes-accent-yellow/5 to-transparent border-l-2 border-hatofes-accent-yellow/40">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span className="text-lg">📊</span>
+                <svg className="w-5 h-5 text-hatofes-accent-yellow" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
                 <div>
                   <p className="text-xs text-hatofes-gray">本日の累計消した列数</p>
                   <p className="font-display font-bold text-hatofes-white">
@@ -985,7 +1007,7 @@ export default function TetrisPage() {
                   disabled={isRegistering}
                   className="btn-main px-6 py-2 bg-gradient-to-r from-hatofes-accent-yellow to-hatofes-accent-orange disabled:opacity-50"
                 >
-                  {isRegistering ? '登録中...' : '🏆 ランキングに登録する'}
+                  {isRegistering ? '登録中...' : 'ランキングに登録する'}
                 </button>
               </div>
             )}

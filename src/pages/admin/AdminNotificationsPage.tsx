@@ -27,6 +27,7 @@ export default function AdminNotificationsPage() {
   })
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [fixing, setFixing] = useState(false)
 
   useEffect(() => {
     fetchNotifications()
@@ -49,9 +50,18 @@ export default function AdminNotificationsPage() {
   }
 
   const handleCreate = async () => {
-    if (!newNotification.title || !newNotification.message) return
+    if (!newNotification.title || !newNotification.message) {
+      setMessage({ type: 'error', text: 'タイトルとメッセージを入力してください' })
+      return
+    }
+
+    if (newNotification.targetRoles.length === 0) {
+      setMessage({ type: 'error', text: '送信対象を少なくとも1つ選択してください' })
+      return
+    }
 
     setSubmitting(true)
+    setMessage(null)
     try {
       const notifId = `notif-${Date.now()}`
       const senderName = userData?.realName || userData?.username || '運営'
@@ -65,7 +75,8 @@ export default function AdminNotificationsPage() {
         createdBy: currentUser?.uid,
         senderName,
         createdAt: Timestamp.now(),
-        readBy: [],
+        readCount: 0, // Initialize readCount for new notification system
+        readBy: [], // Keep for backwards compatibility during transition
       })
 
       setMessage({ type: 'success', text: '通知を送信しました' })
@@ -100,6 +111,37 @@ export default function AdminNotificationsPage() {
     }
   }
 
+  const handleFixOldNotifications = async () => {
+    if (!confirm('古い通知にtargetRolesフィールドを追加しますか？（全ロール対象になります）')) return
+
+    setFixing(true)
+    setMessage(null)
+    try {
+      const snap = await getDocs(collection(db, 'notifications'))
+      let fixedCount = 0
+
+      for (const docSnap of snap.docs) {
+        const data = docSnap.data()
+        // targetRolesが存在しないか空の場合のみ修正
+        if (!data.targetRoles || data.targetRoles.length === 0) {
+          await setDoc(doc(db, 'notifications', docSnap.id), {
+            ...data,
+            targetRoles: ['student', 'teacher', 'staff', 'admin']
+          })
+          fixedCount++
+        }
+      }
+
+      setMessage({ type: 'success', text: `${fixedCount}件の通知を修正しました` })
+      await fetchNotifications()
+    } catch (error) {
+      console.error('Error fixing notifications:', error)
+      setMessage({ type: 'error', text: '修正に失敗しました' })
+    } finally {
+      setFixing(false)
+    }
+  }
+
   const toggleRole = (role: string) => {
     setNewNotification(prev => {
       const roles = prev.targetRoles.includes(role)
@@ -129,9 +171,18 @@ export default function AdminNotificationsPage() {
             </Link>
             <h1 className="font-display text-xl font-bold text-hatofes-white">通知送信</h1>
           </div>
-          <button onClick={() => setShowCreate(true)} className="btn-main text-sm px-4 py-2">
-            新規作成
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handleFixOldNotifications}
+              disabled={fixing}
+              className="btn-sub text-xs px-3 py-2 disabled:opacity-50"
+            >
+              {fixing ? '修正中...' : '🔧 古い通知を修正'}
+            </button>
+            <button onClick={() => setShowCreate(true)} className="btn-main text-sm px-4 py-2">
+              新規作成
+            </button>
+          </div>
         </div>
       </header>
 

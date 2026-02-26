@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import type { Class } from '../types/firestore';
 
@@ -10,9 +10,9 @@ interface UseClassPointsResult {
 }
 
 /**
- * Hook to fetch and subscribe to class points in real-time
+ * Hook to fetch class points data (one-time fetch, optimized for cost reduction)
  * @param classId - Class ID (e.g., "1-A", "2-B")
- * @returns Class data with real-time updates
+ * @returns Class data (fetched once on mount)
  */
 export function useClassPoints(classId: string | null): UseClassPointsResult {
   const [classData, setClassData] = useState<Class | null>(null);
@@ -26,31 +26,29 @@ export function useClassPoints(classId: string | null): UseClassPointsResult {
       return;
     }
 
-    setLoading(true);
-    setError(null);
+    const fetchClassData = async () => {
+      setLoading(true);
+      setError(null);
 
-    const classDocRef = doc(db, 'classes', classId);
+      try {
+        const classDocRef = doc(db, 'classes', classId);
+        const classDocSnap = await getDoc(classDocRef);
 
-    // Set up real-time listener
-    const unsubscribe = onSnapshot(
-      classDocRef,
-      (docSnap) => {
-        if (docSnap.exists()) {
-          setClassData({ id: docSnap.id, ...docSnap.data() } as Class);
+        if (classDocSnap.exists()) {
+          setClassData({ id: classDocSnap.id, ...classDocSnap.data() } as Class);
         } else {
           setClassData(null);
           setError('クラスデータが見つかりません');
         }
-        setLoading(false);
-      },
-      (err) => {
+      } catch (err) {
         console.error('Error fetching class data:', err);
         setError('クラスデータの取得に失敗しました');
+      } finally {
         setLoading(false);
       }
-    );
+    };
 
-    return () => unsubscribe();
+    fetchClassData();
   }, [classId]);
 
   return {

@@ -8,19 +8,20 @@ export default {
     extend: {
       colors: {
         hatofes: {
-          bg: '#1a1a1a',
+          // These now use CSS variables for theme support
+          bg: 'var(--color-bg)',
           black: '#111111',
-          dark: '#0d0d0d',
-          white: '#ffffff',
+          dark: 'var(--color-bg-secondary)',
+          white: 'var(--color-text-primary)',
           gray: {
-            DEFAULT: '#666666',
-            light: '#8a8a8a',
-            lighter: '#2a2a2a',
-            muted: '#909090',
+            DEFAULT: 'var(--color-text-muted)',
+            light: 'var(--color-text-secondary)',
+            lighter: 'var(--color-bg-elevated)',
+            muted: 'var(--color-text-muted)',
           },
           accent: {
-            yellow: '#FFC300',
-            orange: '#FF4E00',
+            yellow: 'var(--color-accent-yellow)',
+            orange: 'var(--color-accent-orange)',
           },
         },
       },
@@ -38,7 +39,7 @@ export default {
         ],
       },
       boxShadow: {
-        'card': '0 0 25px 0 rgba(255, 255, 255, 0.3)',
+        'card': '0 0 25px 0 var(--color-shadow)',
       },
     },
   },

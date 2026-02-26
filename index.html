@@ -1,6 +1,14 @@
 <!doctype html>
-<html lang="ja">
+<html lang="ja" data-theme="dark">
   <head>
+    <script>
+      // Prevent flash: apply theme before render
+      (function() {
+        var theme = localStorage.getItem('hatofes-theme') || 'dark';
+        document.documentElement.setAttribute('data-theme', theme);
+        document.documentElement.style.colorScheme = theme;
+      })();
+    </script>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />

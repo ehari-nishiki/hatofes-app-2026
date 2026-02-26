@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
-import { collection, query, where, orderBy, limit, getDocs, doc, updateDoc, arrayUnion, getDoc } from 'firebase/firestore'
+import { collection, query, where, orderBy, limit, getDocs, doc, updateDoc, arrayUnion, getDoc, setDoc, serverTimestamp } from 'firebase/firestore'
 import { getFunctions, httpsCallable } from 'firebase/functions'
 import { db } from '@/lib/firebase'
 import app from '@/lib/firebase'
 import AppHeader from '@/components/layout/AppHeader'
 import { useAuth } from '@/contexts/AuthContext'
+import { SkeletonCard } from '@/components/ui/SkeletonLoader'
 import type { Notification as NotificationType } from '@/types/firestore'
 
 const functions = getFunctions(app)
@@ -20,14 +21,17 @@ export default function NotificationsPage() {
   const { currentUser, userData } = useAuth()
   const [notifications, setNotifications] = useState<NotificationWithStatus[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  // Fetch notifications with server-side filtering (optimized)
+  // Fetch notifications with server-side filtering (optimized with subcollection)
   useEffect(() => {
     if (!currentUser || !userData) return
 
     const fetchNotifications = async () => {
       setLoading(true)
+      setError(null)
       try {
+        console.log('[NotificationsPage] Fetching notifications for role:', userData.role)
         const q = query(
           collection(db, 'notifications'),
           where('targetRoles', 'array-contains', userData.role),
@@ -36,14 +40,25 @@ export default function NotificationsPage() {
         )
 
         const snapshot = await getDocs(q)
-        const list: NotificationWithStatus[] = snapshot.docs.map(docSnap => {
-          const data = docSnap.data() as NotificationType
-          return {
-            id: docSnap.id,
-            ...data,
-            isRead: data.readBy?.includes(currentUser.uid) || false,
-          }
-        })
+        console.log('[NotificationsPage] Fetched', snapshot.size, 'notifications')
+
+        // Check read status for each notification from subcollection
+        const list: NotificationWithStatus[] = await Promise.all(
+          snapshot.docs.map(async (docSnap) => {
+            const data = docSnap.data() as NotificationType
+            const readStatusDoc = await getDoc(
+              doc(db, 'notifications', docSnap.id, 'readStatus', currentUser.uid)
+            )
+            const isRead = readStatusDoc.exists()
+
+            console.log('[NotificationsPage] Notification:', docSnap.id, 'isRead:', isRead)
+            return {
+              id: docSnap.id,
+              ...data,
+              isRead,
+            }
+          })
+        )
 
         // Sort: unread first, then by date
         list.sort((a, b) => {
@@ -52,8 +67,11 @@ export default function NotificationsPage() {
         })
 
         setNotifications(list)
+        console.log('[NotificationsPage] Set notifications:', list.length)
       } catch (error) {
         console.error('Error fetching notifications:', error)
+        const errorMessage = error instanceof Error ? error.message : '通知の取得に失敗しました'
+        setError(errorMessage)
       } finally {
         setLoading(false)
       }
@@ -62,13 +80,22 @@ export default function NotificationsPage() {
     fetchNotifications()
   }, [currentUser, userData])
 
-  // Mark notification as read (onSnapshot will auto-update the list)
+  // Mark notification as read (using subcollection for cost optimization)
   const markAsRead = async (notifId: string) => {
     if (!currentUser) return
     try {
-      await updateDoc(doc(db, 'notifications', notifId), {
-        readBy: arrayUnion(currentUser.uid)
-      })
+      // Set read status in subcollection
+      await setDoc(
+        doc(db, 'notifications', notifId, 'readStatus', currentUser.uid),
+        {
+          readAt: serverTimestamp(),
+          pointsClaimed: false
+        }
+      )
+      // Update local state
+      setNotifications(prev => prev.map(n =>
+        n.id === notifId ? { ...n, isRead: true } : n
+      ))
     } catch (error) {
       console.error('Error marking notification as read:', error)
     }
@@ -101,10 +128,18 @@ export default function NotificationsPage() {
           )}
         </div>
 
+        {/* Error Message */}
+        {error && (
+          <div className="mb-4 p-4 rounded-lg bg-red-500/20 text-red-400 border border-red-500/30">
+            <p className="text-sm font-medium">エラー: {error}</p>
+            <p className="text-xs mt-1">コンソールを確認してください</p>
+          </div>
+        )}
+
         {/* Notification List */}
         <div className="card">
           {loading ? (
-            <p className="text-hatofes-gray text-center py-4">読み込み中...</p>
+            <SkeletonCard count={5} />
           ) : notifications.length === 0 ? (
             <p className="text-hatofes-gray text-center py-4">通知はありません</p>
           ) : (
@@ -154,7 +189,7 @@ export function NotificationDetailPage() {
   const navigate = useNavigate()
   const { currentUser, userData } = useAuth()
   const [notification, setNotification] = useState<NotificationWithStatus | null>(null)
-  const [senderInfo, setSenderInfo] = useState<{ name: string; role: string } | null>(null)
+  const [senderInfo, setSenderInfo] = useState<{ name: string; role: string; department?: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const [claimingPoints, setClaimingPoints] = useState(false)
   const [pointsClaimed, setPointsClaimed] = useState(false)
@@ -189,7 +224,8 @@ export function NotificationDetailPage() {
                 const senderData = senderDoc.data()
                 setSenderInfo({
                   name: data.senderName || senderData.realName || senderData.username || '運営',
-                  role: senderData.role || 'admin'
+                  role: senderData.role || 'admin',
+                  department: senderData.department || undefined
                 })
               } else {
                 setSenderInfo({
@@ -330,6 +366,11 @@ export function NotificationDetailPage() {
                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${getRoleBadgeStyle(senderInfo.role)}`}>
                     {getRoleLabel(senderInfo.role)}
                   </span>
+                  {senderInfo.department && (
+                    <span className="px-2 py-0.5 rounded text-xs font-medium bg-hatofes-gray/30 text-hatofes-gray-light">
+                      {senderInfo.department}
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-hatofes-gray mt-0.5">
                   {formatDate(notification.createdAt)}

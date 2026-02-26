@@ -1308,6 +1308,59 @@ export const registerTetrisRanking = functions.https.onCall(async (request) => {
   return { success: true, message: 'ランキングに登録しました' };
 });
 
+// テトリスランキングをリセット（管理者のみ）
+export const resetTetrisRankings = functions.https.onCall(async (request) => {
+  if (!request.auth) {
+    throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+  }
+
+  const uid = request.auth.uid;
+  const adminDoc = await db.collection('users').doc(uid).get();
+  if (!adminDoc.exists || adminDoc.data()!.role !== 'admin') {
+    throw new functions.https.HttpsError('permission-denied', '管理者権限が必要です');
+  }
+
+  try {
+    // tetrisScoresコレクション全体を取得
+    const snapshot = await db.collection('tetrisScores').get();
+
+    if (snapshot.empty) {
+      return { success: true, message: 'リセットするランキングがありません', deletedCount: 0 };
+    }
+
+    // バッチ削除（Firestoreのバッチサイズ制限は500）
+    const batchSize = 500;
+    const batches = [];
+    let batch = db.batch();
+    let count = 0;
+
+    snapshot.docs.forEach((doc) => {
+      batch.delete(doc.ref);
+      count++;
+
+      if (count % batchSize === 0) {
+        batches.push(batch.commit());
+        batch = db.batch();
+      }
+    });
+
+    // 残りのバッチをコミット
+    if (count % batchSize !== 0) {
+      batches.push(batch.commit());
+    }
+
+    await Promise.all(batches);
+
+    // 監査ログ
+    await logAdminAction(uid, 'resetTetrisRankings', { deletedCount: snapshot.size });
+
+    return { success: true, message: `${snapshot.size}件のランキングをリセットしました`, deletedCount: snapshot.size };
+  } catch (error) {
+    console.error('Error resetting tetris rankings:', error);
+    throw new functions.https.HttpsError('internal', 'ランキングのリセットに失敗しました');
+  }
+});
+
 // テトリススコア提出（生徒のみ）— 日別カウント制
 export const submitTetrisScore = functions.https.onCall(async (request) => {
   if (!request.auth) {
@@ -1573,6 +1626,166 @@ export const pullGacha = functions.https.onCall(async (request) => {
   };
 });
 
+// ガチャを複数回引く（バッチ処理で高速化）
+export const pullGachaBatch = functions.https.onCall(async (request) => {
+  if (!request.auth) {
+    throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+  }
+
+  const email = request.auth.token?.email || '';
+  if (!isValidDomain(email)) {
+    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
+  }
+
+  const count = (request.data as { count?: number })?.count ?? 1;
+  if (count < 1 || count > 10) {
+    throw new functions.https.HttpsError('invalid-argument', '1〜10回の範囲で指定してください');
+  }
+
+  const uid = request.auth.uid;
+  const userDocRef = db.collection('users').doc(uid);
+
+  // アクティブアイテム取得（1回だけ）
+  const itemsSnap = await db.collection('gachaItems').where('isActive', '==', true).get();
+  if (itemsSnap.empty) {
+    throw new functions.https.HttpsError('failed-precondition', 'ガチャアイテムが設定されていません');
+  }
+
+  interface GachaItemDoc {
+    id: string;
+    name: string;
+    description: string;
+    type: string;
+    rarity: string;
+    weight: number;
+    pointsValue?: number;
+    ticketValue?: number;
+    imageUrl?: string;
+    isActive: boolean;
+  }
+  const items: GachaItemDoc[] = itemsSnap.docs.map(d => ({ id: d.id, ...d.data() }) as GachaItemDoc);
+  const totalWeight = items.reduce((sum, item) => sum + item.weight, 0);
+
+  // 重み付きランダム選択を複数回実行
+  const selectedItems: GachaItemDoc[] = [];
+  for (let i = 0; i < count; i++) {
+    let rand = Math.random() * totalWeight;
+    let selected = items[0];
+    for (const item of items) {
+      rand -= item.weight;
+      if (rand <= 0) {
+        selected = item;
+        break;
+      }
+    }
+    selectedItems.push(selected);
+  }
+
+  // 集計
+  let totalPointsGain = 0;
+  let totalTicketsGain = 0;
+  for (const item of selectedItems) {
+    if (item.type === 'points' && item.pointsValue) {
+      totalPointsGain += item.pointsValue;
+    }
+    if (item.type === 'ticket' && item.ticketValue) {
+      totalTicketsGain += item.ticketValue;
+    }
+  }
+
+  await db.runTransaction(async (transaction) => {
+    // --- reads first ---
+    const freshUserDoc = await transaction.get(userDocRef);
+    if (!freshUserDoc.exists) {
+      throw new functions.https.HttpsError('not-found', 'ユーザーが見つかりません');
+    }
+
+    const currentTickets = freshUserDoc.data()!.gachaTickets || 0;
+    if (currentTickets < count) {
+      throw new functions.https.HttpsError('failed-precondition', 'チケットが足りません');
+    }
+
+    const userData = freshUserDoc.data()!;
+    const classRef = getClassRef(userData);
+    const classDoc = (classRef && totalPointsGain > 0)
+      ? await transaction.get(classRef)
+      : null;
+
+    // --- writes ---
+    // チケット消費
+    transaction.update(userDocRef, {
+      gachaTickets: admin.firestore.FieldValue.increment(-count),
+      ...(totalPointsGain > 0 && { totalPoints: admin.firestore.FieldValue.increment(totalPointsGain) }),
+      ...(totalTicketsGain > 0 && { gachaTickets: admin.firestore.FieldValue.increment(totalTicketsGain - count) }),
+    });
+
+    // チケット消費履歴
+    const ticketHistoryRef = db.collection('ticketHistory').doc();
+    transaction.set(ticketHistoryRef, {
+      userId: uid,
+      tickets: -count,
+      reason: 'gacha_pull',
+      details: `ガチャ${count}連を引いた`,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // 各アイテムの履歴を記録
+    for (const item of selectedItems) {
+      const gachaHistoryRef = db.collection('gachaHistory').doc();
+      transaction.set(gachaHistoryRef, {
+        userId: uid,
+        itemId: item.id,
+        itemName: item.name,
+        itemRarity: item.rarity,
+        pulledAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    // ポイント獲得履歴（まとめて1件）
+    if (totalPointsGain > 0) {
+      const pointHistoryRef = db.collection('pointHistory').doc();
+      transaction.set(pointHistoryRef, {
+        userId: uid,
+        points: totalPointsGain,
+        reason: 'game_result',
+        details: `ガチャ${count}連からポイント獲得`,
+        grantedBy: 'system',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      if (classRef && classDoc) {
+        writeClassPoints(transaction, classRef, classDoc, userData as { grade: number; class: string }, totalPointsGain);
+      }
+    }
+
+    // チケット獲得履歴（まとめて1件）
+    if (totalTicketsGain > 0) {
+      const bonusTicketHistoryRef = db.collection('ticketHistory').doc();
+      transaction.set(bonusTicketHistoryRef, {
+        userId: uid,
+        tickets: totalTicketsGain,
+        reason: 'gacha_item_reward',
+        details: `ガチャ${count}連からチケット獲得`,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+  });
+
+  return {
+    success: true,
+    items: selectedItems.map(item => ({
+      id: item.id,
+      name: item.name,
+      description: item.description || '',
+      rarity: item.rarity,
+      type: item.type,
+      pointsValue: item.pointsValue ?? null,
+      ticketValue: item.ticketValue ?? null,
+      imageUrl: item.imageUrl || null,
+    })),
+  };
+});
+
 // ==========================================
 // Dashboard Stats Cache - Admin Dashboard Optimization
 // ==========================================
@@ -1610,15 +1823,14 @@ export const updateDashboardStats = functions.scheduler.onSchedule({
       .get();
     const todayLogins = todayLoginsSnapshot.data().count;
 
-    // 総ポイント発行数
-    const pointHistorySnapshot = await db.collection('pointHistory').get();
-    let totalPointsIssued = 0;
-    pointHistorySnapshot.forEach(doc => {
-      const data = doc.data();
-      if (data.points && data.points > 0) {
-        totalPointsIssued += data.points;
-      }
-    });
+    // 総ポイント発行数 - 集計クエリで効率化（N件 = ceil(N/1000) reads）
+    const pointsAggregateSnapshot = await db.collection('pointHistory')
+      .where('points', '>', 0)
+      .aggregate({
+        totalPointsIssued: admin.firestore.AggregateField.sum('points'),
+      })
+      .get();
+    const totalPointsIssued = pointsAggregateSnapshot.data().totalPointsIssued || 0;
 
     // アクティブなアンケート数
     const activeSurveysSnapshot = await db.collection('surveys')
@@ -1687,14 +1899,14 @@ export const refreshDashboardStats = functions.https.onCall(async (request) => {
       .get();
     const todayLogins = todayLoginsSnapshot.data().count;
 
-    const pointHistorySnapshot = await db.collection('pointHistory').get();
-    let totalPointsIssued = 0;
-    pointHistorySnapshot.forEach(doc => {
-      const data = doc.data();
-      if (data.points && data.points > 0) {
-        totalPointsIssued += data.points;
-      }
-    });
+    // 総ポイント発行数 - 集計クエリで効率化（N件 = ceil(N/1000) reads）
+    const pointsAggregateSnapshot = await db.collection('pointHistory')
+      .where('points', '>', 0)
+      .aggregate({
+        totalPointsIssued: admin.firestore.AggregateField.sum('points'),
+      })
+      .get();
+    const totalPointsIssued = pointsAggregateSnapshot.data().totalPointsIssued || 0;
 
     const activeSurveysSnapshot = await db.collection('surveys')
       .where('status', '==', 'active')
@@ -2070,4 +2282,612 @@ export const claimNotificationPoints = functions.https.onCall(async (request) =>
   });
 
   return { success: true, message: 'ポイントを獲得しました' };
+});
+
+// ===== NOTIFICATION OPTIMIZATION (Cost Reduction) =====
+
+/**
+ * Automatically increment readCount when a user marks a notification as read
+ * Triggered when: notifications/{notifId}/readStatus/{userId} is created
+ */
+export const updateNotificationReadCount = functions.firestore.onDocumentCreated(
+  'notifications/{notifId}/readStatus/{userId}',
+  async (event) => {
+    const notifId = event.params.notifId;
+
+    try {
+      const notifRef = db.collection('notifications').doc(notifId);
+      await notifRef.update({
+        readCount: admin.firestore.FieldValue.increment(1)
+      });
+      console.log(`Updated readCount for notification ${notifId}`);
+    } catch (error) {
+      console.error(`Failed to update readCount for notification ${notifId}:`, error);
+      // Don't throw - allow the subcollection write to succeed even if parent update fails
+    }
+  }
+);
+
+/**
+ * Migration function to convert readBy arrays to readStatus subcollections
+ * This is a one-time migration function for existing notifications
+ * Call via: firebase functions:call migrateNotificationReadStatus
+ */
+export const migrateNotificationReadStatus = functions.https.onCall(
+  async (request) => {
+    // Verify admin permissions
+    if (!request.auth) {
+      throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+    }
+
+    const adminDoc = await db.collection('users').doc(request.auth.uid).get();
+    if (!adminDoc.exists || adminDoc.data()!.role !== 'admin') {
+      throw new functions.https.HttpsError('permission-denied', '管理者権限が必要です');
+    }
+
+    console.log(`Starting notification migration by admin ${request.auth.uid}`);
+
+    const notificationsSnap = await db.collection('notifications').get();
+    let migratedCount = 0;
+    let errorCount = 0;
+
+    // Process in batches of 500 (Firestore batch limit)
+    const batchSize = 500;
+    let batch = db.batch();
+    let operationCount = 0;
+
+    for (const notifDoc of notificationsSnap.docs) {
+      try {
+        const data = notifDoc.data();
+        const readBy = data.readBy || [];
+
+        // Create readStatus subcollection entries
+        for (const userId of readBy) {
+          const readStatusRef = notifDoc.ref
+            .collection('readStatus')
+            .doc(userId);
+          batch.set(readStatusRef, {
+            readAt: data.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+            pointsClaimed: data.pointsReceivedBy?.includes(userId) || false
+          });
+          operationCount++;
+
+          // Commit batch if limit reached
+          if (operationCount >= batchSize) {
+            await batch.commit();
+            batch = db.batch();
+            operationCount = 0;
+          }
+        }
+
+        // Update notification document
+        batch.update(notifDoc.ref, {
+          readCount: readBy.length,
+          // Keep readBy for backwards compatibility during transition period
+          // readBy: admin.firestore.FieldValue.delete(), // Uncomment after migration is verified
+        });
+        operationCount++;
+
+        migratedCount++;
+
+        // Commit batch if limit reached
+        if (operationCount >= batchSize) {
+          await batch.commit();
+          batch = db.batch();
+          operationCount = 0;
+        }
+      } catch (error) {
+        console.error(`Error migrating notification ${notifDoc.id}:`, error);
+        errorCount++;
+      }
+    }
+
+    // Commit remaining operations
+    if (operationCount > 0) {
+      await batch.commit();
+    }
+
+    console.log(`Migration complete: ${migratedCount} notifications, ${errorCount} errors`);
+
+    return {
+      success: true,
+      migrated: migratedCount,
+      errors: errorCount,
+      message: `${migratedCount}件の通知を移行しました (エラー: ${errorCount}件)`
+    };
+  }
+);
+
+// ===== POINT HISTORY AGGREGATION (Cost Reduction) =====
+
+/**
+ * Helper: Get yesterday's date string in JST (YYYY-MM-DD)
+ */
+function getYesterdayDateString(): string {
+  const now = new Date();
+  const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  jst.setDate(jst.getDate() - 1);
+  return jst.toISOString().split('T')[0];
+}
+
+/**
+ * Helper: Get start of yesterday in JST as Firestore Timestamp
+ */
+function getYesterdayStart(): admin.firestore.Timestamp {
+  const now = new Date();
+  const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  jst.setDate(jst.getDate() - 1);
+  jst.setHours(0, 0, 0, 0);
+  // Convert back to UTC for Firestore
+  const utc = new Date(jst.getTime() - 9 * 60 * 60 * 1000);
+  return admin.firestore.Timestamp.fromDate(utc);
+}
+
+/**
+ * Helper: Get start of today in JST as Firestore Timestamp
+ */
+function getTodayStart(): admin.firestore.Timestamp {
+  const now = new Date();
+  const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  jst.setHours(0, 0, 0, 0);
+  // Convert back to UTC for Firestore
+  const utc = new Date(jst.getTime() - 9 * 60 * 60 * 1000);
+  return admin.firestore.Timestamp.fromDate(utc);
+}
+
+/**
+ * Daily scheduled function to aggregate point history
+ * Runs at midnight JST every day
+ * Creates daily summaries in pointAggregations/{userId}/daily/{YYYY-MM-DD}
+ */
+export const aggregatePointHistory = functions.scheduler.onSchedule(
+  {
+    schedule: '0 0 * * *', // Midnight every day
+    timeZone: 'Asia/Tokyo',
+  },
+  async () => {
+    console.log('Starting daily point history aggregation...');
+
+    const yesterday = getYesterdayDateString();
+    const yesterdayStart = getYesterdayStart();
+    const todayStart = getTodayStart();
+
+    // Get all users
+    const usersSnap = await db.collection('users').get();
+    console.log(`Processing ${usersSnap.size} users for date ${yesterday}`);
+
+    let processedCount = 0;
+    let errorCount = 0;
+
+    // Process users in batches
+    const batchSize = 100;
+    const userDocs = usersSnap.docs;
+
+    for (let i = 0; i < userDocs.length; i += batchSize) {
+      const batch = userDocs.slice(i, i + batchSize);
+
+      await Promise.all(batch.map(async (userDoc) => {
+        try {
+          // Get point history for this user from yesterday
+          const pointHistorySnap = await db.collection('pointHistory')
+            .where('userId', '==', userDoc.id)
+            .where('createdAt', '>=', yesterdayStart)
+            .where('createdAt', '<', todayStart)
+            .get();
+
+          if (pointHistorySnap.empty) {
+            // No activity, skip aggregation
+            return;
+          }
+
+          // Aggregate by reason
+          const aggregation: Record<string, number> = {
+            totalPoints: 0,
+            login_bonus: 0,
+            survey: 0,
+            admin_grant: 0,
+            admin_deduct: 0,
+            admin_clear: 0,
+            game_result: 0,
+          };
+
+          pointHistorySnap.forEach(doc => {
+            const data = doc.data();
+            aggregation.totalPoints += data.points || 0;
+            const reason = data.reason as string;
+            if (reason in aggregation) {
+              aggregation[reason] += data.points || 0;
+            }
+          });
+
+          // Write aggregation
+          await db.collection('pointAggregations')
+            .doc(userDoc.id)
+            .collection('daily')
+            .doc(yesterday)
+            .set({
+              ...aggregation,
+              transactionCount: pointHistorySnap.size,
+              aggregatedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+
+          processedCount++;
+        } catch (error) {
+          console.error(`Error aggregating for user ${userDoc.id}:`, error);
+          errorCount++;
+        }
+      }));
+    }
+
+    console.log(`Aggregation complete: ${processedCount} users processed, ${errorCount} errors`);
+  }
+);
+
+/**
+ * Manual trigger for point aggregation (for testing or backfill)
+ * Admin-only callable function
+ */
+export const triggerPointAggregation = functions.https.onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+    }
+
+    const adminDoc = await db.collection('users').doc(request.auth.uid).get();
+    if (!adminDoc.exists || adminDoc.data()!.role !== 'admin') {
+      throw new functions.https.HttpsError('permission-denied', '管理者権限が必要です');
+    }
+
+    // Trigger the aggregation manually (will process yesterday's data)
+    console.log('Manual aggregation triggered by admin:', request.auth.uid);
+
+    // Run aggregation logic inline
+    const yesterday = getYesterdayDateString();
+    const yesterdayStart = getYesterdayStart();
+    const todayStart = getTodayStart();
+
+    const usersSnap = await db.collection('users').get();
+    let processedCount = 0;
+
+    for (const userDoc of usersSnap.docs) {
+      const pointHistorySnap = await db.collection('pointHistory')
+        .where('userId', '==', userDoc.id)
+        .where('createdAt', '>=', yesterdayStart)
+        .where('createdAt', '<', todayStart)
+        .get();
+
+      if (pointHistorySnap.empty) continue;
+
+      const aggregation: Record<string, number> = {
+        totalPoints: 0,
+        login_bonus: 0,
+        survey: 0,
+        admin_grant: 0,
+        admin_deduct: 0,
+        admin_clear: 0,
+        game_result: 0,
+      };
+
+      pointHistorySnap.forEach(doc => {
+        const data = doc.data();
+        aggregation.totalPoints += data.points || 0;
+        const reason = data.reason as string;
+        if (reason in aggregation) {
+          aggregation[reason] += data.points || 0;
+        }
+      });
+
+      await db.collection('pointAggregations')
+        .doc(userDoc.id)
+        .collection('daily')
+        .doc(yesterday)
+        .set({
+          ...aggregation,
+          transactionCount: pointHistorySnap.size,
+          aggregatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+      processedCount++;
+    }
+
+    return {
+      success: true,
+      date: yesterday,
+      processedUsers: processedCount,
+      message: `${yesterday}のポイント履歴を${processedCount}件集計しました`
+    };
+  }
+);
+
+// ===== CLASS MEMBER TRACKING (Cost Reduction) =====
+
+/**
+ * Track class membership changes when a user's grade/class is updated
+ * Updates memberIds array in classes collection for efficient member lookup
+ */
+export const updateClassMembers = functions.firestore.onDocumentWritten(
+  'users/{userId}',
+  async (event) => {
+    const userId = event.params.userId;
+    const beforeData = event.data?.before?.data();
+    const afterData = event.data?.after?.data();
+
+    // Skip if no change in grade/class
+    const oldGrade = beforeData?.grade;
+    const oldClass = beforeData?.class;
+    const newGrade = afterData?.grade;
+    const newClass = afterData?.class;
+
+    // Determine old and new class IDs
+    const oldClassId = (oldGrade && oldClass) ? `${oldGrade}-${oldClass}` : null;
+    const newClassId = (newGrade && newClass) ? `${newGrade}-${newClass}` : null;
+
+    // If class didn't change, skip
+    if (oldClassId === newClassId) {
+      return;
+    }
+
+    console.log(`User ${userId} class changed from ${oldClassId} to ${newClassId}`);
+
+    try {
+      // Remove from old class
+      if (oldClassId) {
+        const oldClassRef = db.collection('classes').doc(oldClassId);
+        await oldClassRef.update({
+          memberIds: admin.firestore.FieldValue.arrayRemove(userId),
+          memberCount: admin.firestore.FieldValue.increment(-1)
+        }).catch((error) => {
+          // Class might not exist yet, that's OK
+          console.log(`Could not update old class ${oldClassId}:`, error.message);
+        });
+      }
+
+      // Add to new class
+      if (newClassId) {
+        const newClassRef = db.collection('classes').doc(newClassId);
+        const newClassDoc = await newClassRef.get();
+
+        if (newClassDoc.exists) {
+          await newClassRef.update({
+            memberIds: admin.firestore.FieldValue.arrayUnion(userId),
+            memberCount: admin.firestore.FieldValue.increment(1)
+          });
+        } else {
+          // Create the class document if it doesn't exist
+          await newClassRef.set({
+            grade: newGrade,
+            className: newClass,
+            totalPoints: 0,
+            memberCount: 1,
+            memberIds: [userId]
+          });
+        }
+      }
+    } catch (error) {
+      console.error(`Error updating class membership for user ${userId}:`, error);
+    }
+  }
+);
+
+/**
+ * Initialize memberIds for all existing classes
+ * One-time migration function
+ */
+export const initializeClassMembers = functions.https.onCall(
+  async (request) => {
+    if (!request.auth) {
+      throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+    }
+
+    const adminDoc = await db.collection('users').doc(request.auth.uid).get();
+    if (!adminDoc.exists || adminDoc.data()!.role !== 'admin') {
+      throw new functions.https.HttpsError('permission-denied', '管理者権限が必要です');
+    }
+
+    console.log('Starting class member initialization...');
+
+    // Get all users and group by class
+    const usersSnap = await db.collection('users').get();
+    const classMemberMap: Record<string, string[]> = {};
+
+    usersSnap.forEach(userDoc => {
+      const data = userDoc.data();
+      if (data.grade && data.class) {
+        const classId = `${data.grade}-${data.class}`;
+        if (!classMemberMap[classId]) {
+          classMemberMap[classId] = [];
+        }
+        classMemberMap[classId].push(userDoc.id);
+      }
+    });
+
+    // Update each class with memberIds
+    let updatedCount = 0;
+    for (const [classId, memberIds] of Object.entries(classMemberMap)) {
+      const classRef = db.collection('classes').doc(classId);
+      const classDoc = await classRef.get();
+
+      if (classDoc.exists) {
+        await classRef.update({
+          memberIds,
+          memberCount: memberIds.length
+        });
+      } else {
+        // Parse class info from ID
+        const [gradeStr, className] = classId.split('-');
+        await classRef.set({
+          grade: parseInt(gradeStr, 10),
+          className,
+          totalPoints: 0,
+          memberCount: memberIds.length,
+          memberIds
+        });
+      }
+      updatedCount++;
+    }
+
+    return {
+      success: true,
+      classesUpdated: updatedCount,
+      totalUsers: usersSnap.size,
+      message: `${updatedCount}クラスのメンバーリストを初期化しました`
+    };
+  }
+);
+
+// 学年・クラス単位での一括配布（チケット・ポイント）
+export const bulkDistributeByClass = functions.https.onCall(async (request) => {
+  if (!request.auth) {
+    throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+  }
+
+  const email = request.auth.token?.email || '';
+  if (!isValidDomain(email)) {
+    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
+  }
+
+  const adminDoc = await db.collection('users').doc(request.auth.uid).get();
+  if (!adminDoc.exists || !['admin', 'staff'].includes(adminDoc.data()!.role)) {
+    throw new functions.https.HttpsError('permission-denied', '管理者のみ使用可能です');
+  }
+
+  const { grade, classNames, tickets, points, details } = request.data as {
+    grade?: number; // null means all grades
+    classNames?: string[]; // null or empty means all classes
+    tickets?: number;
+    points?: number;
+    details?: string;
+  };
+
+  // Validate input
+  if ((tickets == null || tickets <= 0) && (points == null || points <= 0)) {
+    throw new functions.https.HttpsError('invalid-argument', 'チケットまたはポイントを指定してください');
+  }
+
+  const ticketsToGrant = tickets && tickets > 0 ? tickets : 0;
+  const pointsToGrant = points && points > 0 ? points : 0;
+
+  // Build query
+  let usersQuery: admin.firestore.Query = db.collection('users');
+
+  if (grade != null) {
+    usersQuery = usersQuery.where('grade', '==', grade);
+  }
+
+  // Execute query
+  const usersSnap = await usersQuery.get();
+
+  if (usersSnap.empty) {
+    return {
+      success: true,
+      message: '対象ユーザーが見つかりませんでした',
+      successCount: 0,
+      totalCount: 0,
+    };
+  }
+
+  // Filter by class if specified
+  let targetUsers = usersSnap.docs;
+  if (classNames && classNames.length > 0) {
+    targetUsers = targetUsers.filter(doc => {
+      const userData = doc.data();
+      return userData.class && classNames.includes(userData.class);
+    });
+  }
+
+  if (targetUsers.length === 0) {
+    return {
+      success: true,
+      message: '対象ユーザーが見つかりませんでした',
+      successCount: 0,
+      totalCount: 0,
+    };
+  }
+
+  let successCount = 0;
+  const errors: string[] = [];
+  const batchSize = 50;
+
+  // Process in batches
+  for (let i = 0; i < targetUsers.length; i += batchSize) {
+    const batch = targetUsers.slice(i, i + batchSize);
+
+    for (const userDoc of batch) {
+      try {
+        const userId = userDoc.id;
+        const userData = userDoc.data();
+        const userDocRef = db.collection('users').doc(userId);
+        const classRef = getClassRef(userData);
+
+        await db.runTransaction(async (transaction) => {
+          // Read phase
+          const classDoc = classRef && pointsToGrant > 0 ? await transaction.get(classRef) : null;
+
+          // Write phase
+          const updateData: Record<string, unknown> = {};
+
+          if (ticketsToGrant > 0) {
+            updateData.gachaTickets = admin.firestore.FieldValue.increment(ticketsToGrant);
+
+            const ticketHistoryRef = db.collection('ticketHistory').doc();
+            transaction.set(ticketHistoryRef, {
+              userId,
+              tickets: ticketsToGrant,
+              reason: 'admin_grant',
+              details: details || '一括配布',
+              grantedBy: request.auth!.uid,
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+          }
+
+          if (pointsToGrant > 0) {
+            updateData.totalPoints = admin.firestore.FieldValue.increment(pointsToGrant);
+
+            const pointHistoryRef = db.collection('pointHistory').doc();
+            transaction.set(pointHistoryRef, {
+              userId,
+              points: pointsToGrant,
+              reason: 'admin_grant',
+              details: details || '一括配布',
+              grantedBy: request.auth!.uid,
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+
+            if (classRef && classDoc) {
+              writeClassPoints(transaction, classRef, classDoc, userData as { grade: number; class: string }, pointsToGrant);
+            }
+          }
+
+          transaction.update(userDocRef, updateData);
+        });
+
+        successCount++;
+      } catch (err) {
+        errors.push(`${userDoc.data().username || userDoc.id}: ${String(err)}`);
+      }
+    }
+  }
+
+  // Log admin action
+  await logAdminAction(request.auth.uid, 'bulk_distribute', {
+    grade,
+    classNames,
+    tickets: ticketsToGrant,
+    points: pointsToGrant,
+    details,
+    successCount,
+    totalCount: targetUsers.length,
+  });
+
+  const resultParts: string[] = [];
+  if (ticketsToGrant > 0) resultParts.push(`${ticketsToGrant}チケット`);
+  if (pointsToGrant > 0) resultParts.push(`${pointsToGrant}pt`);
+
+  return {
+    success: true,
+    message: `${successCount}/${targetUsers.length}人に${resultParts.join('と')}を配布しました`,
+    successCount,
+    totalCount: targetUsers.length,
+    errors: errors.length > 0 ? errors : undefined,
+  };
 });

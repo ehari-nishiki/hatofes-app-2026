@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { collection, getDocs, query, orderBy, doc, updateDoc } from 'firebase/firestore'
+import { collection, getDocs, query, orderBy, doc, updateDoc, limit, startAfter, DocumentSnapshot } from 'firebase/firestore'
 import { getFunctions, httpsCallable } from 'firebase/functions'
 import { db } from '@/lib/firebase'
 import app from '@/lib/firebase'
+
+const USERS_PER_PAGE = 100
 
 const functions = getFunctions(app)
 const updateUserRoleFn = httpsCallable<
@@ -50,24 +52,74 @@ export default function AdminUsersPage() {
   const [newRole, setNewRole] = useState<string>('')
   const [newDepartment, setNewDepartment] = useState<string>('')
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [currentPage, setCurrentPage] = useState(0)
+  const [lastVisible, setLastVisible] = useState<DocumentSnapshot | null>(null)
+  const [firstVisible, setFirstVisible] = useState<DocumentSnapshot | null>(null)
+  const [hasMore, setHasMore] = useState(true)
+  const [totalCount, setTotalCount] = useState(0)
 
   useEffect(() => {
     fetchUsers()
   }, [])
 
-  const fetchUsers = async () => {
+  const fetchUsers = async (direction: 'first' | 'next' | 'prev' = 'first') => {
+    setLoading(true)
     try {
-      const q = query(collection(db, 'users'), orderBy('username'))
+      let q = query(collection(db, 'users'), orderBy('username'), limit(USERS_PER_PAGE + 1))
+
+      if (direction === 'next' && lastVisible) {
+        q = query(collection(db, 'users'), orderBy('username'), startAfter(lastVisible), limit(USERS_PER_PAGE + 1))
+      } else if (direction === 'prev' && firstVisible) {
+        // For previous page, we need to query backwards
+        q = query(collection(db, 'users'), orderBy('username'), limit(USERS_PER_PAGE + 1))
+        // Re-fetch from beginning and calculate the previous page
+        const allSnap = await getDocs(q)
+        const targetIndex = Math.max(0, (currentPage - 1) * USERS_PER_PAGE)
+        q = query(collection(db, 'users'), orderBy('username'), limit(USERS_PER_PAGE + 1))
+        if (targetIndex > 0 && allSnap.docs[targetIndex - 1]) {
+          q = query(collection(db, 'users'), orderBy('username'), startAfter(allSnap.docs[targetIndex - 1]), limit(USERS_PER_PAGE + 1))
+        }
+      }
+
       const snap = await getDocs(q)
       const list: User[] = []
-      snap.forEach(docSnap => {
+      const docs = snap.docs.slice(0, USERS_PER_PAGE)
+
+      docs.forEach(docSnap => {
         list.push({ id: docSnap.id, ...docSnap.data() } as User)
       })
+
       setUsers(list)
+      setHasMore(snap.docs.length > USERS_PER_PAGE)
+
+      if (docs.length > 0) {
+        setFirstVisible(docs[0])
+        setLastVisible(docs[docs.length - 1])
+      }
+
+      // Get total count on first load
+      if (direction === 'first' && totalCount === 0) {
+        const countSnap = await getDocs(query(collection(db, 'users')))
+        setTotalCount(countSnap.size)
+      }
     } catch (error) {
       console.error('Error fetching users:', error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleNextPage = () => {
+    if (hasMore) {
+      setCurrentPage(prev => prev + 1)
+      fetchUsers('next')
+    }
+  }
+
+  const handlePrevPage = () => {
+    if (currentPage > 0) {
+      setCurrentPage(prev => prev - 1)
+      fetchUsers('prev')
     }
   }
 
@@ -284,9 +336,32 @@ export default function AdminUsersPage() {
 
         {/* User List */}
         <div className="card">
-          <h2 className="text-lg font-bold text-hatofes-white mb-4">
-            ユーザー一覧 ({filteredUsers.length}人)
-          </h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-bold text-hatofes-white">
+              ユーザー一覧 ({filteredUsers.length}人{searchTerm || roleFilter !== 'all' ? ' / フィルタ済' : ` / 全${totalCount}人`})
+            </h2>
+            {!searchTerm && roleFilter === 'all' && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handlePrevPage}
+                  disabled={currentPage === 0 || loading}
+                  className="text-sm px-3 py-1 bg-hatofes-dark border border-hatofes-gray rounded-lg text-hatofes-white disabled:opacity-50 hover:bg-hatofes-gray-lighter"
+                >
+                  前へ
+                </button>
+                <span className="text-sm text-hatofes-gray">
+                  {currentPage + 1} / {Math.ceil(totalCount / USERS_PER_PAGE)}
+                </span>
+                <button
+                  onClick={handleNextPage}
+                  disabled={!hasMore || loading}
+                  className="text-sm px-3 py-1 bg-hatofes-dark border border-hatofes-gray rounded-lg text-hatofes-white disabled:opacity-50 hover:bg-hatofes-gray-lighter"
+                >
+                  次へ
+                </button>
+              </div>
+            )}
+          </div>
 
           {loading ? (
             <p className="text-hatofes-gray text-center py-4">読み込み中...</p>
@@ -323,6 +398,28 @@ export default function AdminUsersPage() {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+
+          {!searchTerm && roleFilter === 'all' && !loading && (
+            <div className="mt-4 pt-4 border-t border-hatofes-gray flex items-center justify-center gap-2">
+              <button
+                onClick={handlePrevPage}
+                disabled={currentPage === 0}
+                className="text-sm px-4 py-2 bg-hatofes-dark border border-hatofes-gray rounded-lg text-hatofes-white disabled:opacity-50 hover:bg-hatofes-gray-lighter"
+              >
+                前のページ
+              </button>
+              <span className="text-sm text-hatofes-gray">
+                {currentPage * USERS_PER_PAGE + 1} - {Math.min((currentPage + 1) * USERS_PER_PAGE, totalCount)} / {totalCount}人
+              </span>
+              <button
+                onClick={handleNextPage}
+                disabled={!hasMore}
+                className="text-sm px-4 py-2 bg-hatofes-dark border border-hatofes-gray rounded-lg text-hatofes-white disabled:opacity-50 hover:bg-hatofes-gray-lighter"
+              >
+                次のページ
+              </button>
             </div>
           )}
         </div>
