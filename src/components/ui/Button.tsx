@@ -16,9 +16,9 @@ const variantClasses = {
 }
 
 const sizeClasses = {
-  sm: 'px-3 py-1.5 text-sm rounded-lg',
-  md: 'px-4 py-2.5 text-sm rounded-xl',
-  lg: 'px-6 py-3 text-base rounded-xl',
+  sm: 'px-4 py-1.5 text-sm rounded-full',
+  md: 'px-5 py-2.5 text-sm rounded-full',
+  lg: 'px-6 py-3 text-base rounded-full',
 }
 
 export function Button({
@@ -94,7 +94,7 @@ export function ViewMoreButton({ to, className = '' }: ViewMoreButtonProps) {
     <Link
       to={to}
       className={`
-        flex items-center justify-center gap-2 py-3 mt-2
+        flex items-center justify-center gap-2 py-2 mt-1
         text-hatofes-gray hover:text-hatofes-white
         transition-colors
         ${className}

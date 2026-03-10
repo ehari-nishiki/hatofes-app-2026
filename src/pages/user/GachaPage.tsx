@@ -5,17 +5,24 @@ import { getFunctions, httpsCallable } from 'firebase/functions'
 import { getAuth } from 'firebase/auth'
 import { db } from '@/lib/firebase'
 import app from '@/lib/firebase'
-import AppHeader from '@/components/layout/AppHeader'
 import { useAuth } from '@/contexts/AuthContext'
 import { Spinner } from '@/components/ui/Spinner'
 import { SkeletonCard } from '@/components/ui/SkeletonLoader'
 import { PointRewardModal } from '@/components/ui/PointRewardModal'
-import { GachaConfetti } from '@/components/ui/GachaConfetti'
 import { GachaItemDetailModal } from '@/components/ui/GachaItemDetailModal'
-import { WebGLAurora } from '@/components/ui/WebGLAurora'
 import { GachaPullLoading } from '@/components/gacha/GachaPullLoading'
 import { GachaCardReveal } from '@/components/gacha/GachaCardReveal'
+import { hapticGacha } from '@/lib/haptics'
 import type { GachaHistoryEntry, GachaRarity, GachaItem } from '@/types/firestore'
+import {
+  PageBackLink,
+  PageEmptyState,
+  PageHero,
+  PageMetric,
+  PageSection,
+  PageSectionTitle,
+  UserPageShell,
+} from '@/components/layout/UserPageShell'
 
 const functions = getFunctions(app)
 
@@ -74,24 +81,12 @@ const RARITY_COLORS: Record<GachaRarity, string> = {
   legendary: 'text-hatofes-accent-yellow',
 }
 
-const RARITY_BG: Record<GachaRarity, string> = {
-  common: 'bg-gray-500/20 border-gray-500/50',
-  uncommon: 'bg-green-500/20 border-green-500/50',
-  rare: 'bg-blue-500/20 border-blue-500/50',
-  epic: 'bg-purple-500/20 border-purple-500/50',
-  legendary: 'bg-hatofes-accent-yellow/20 border-hatofes-accent-yellow/50',
-}
-
 const RARITY_LABELS: Record<GachaRarity, string> = {
   common: 'コモン',
   uncommon: 'アンコモン',
   rare: 'レア',
   epic: 'エピック',
   legendary: 'レジェンダリー',
-}
-
-const RARITY_ORDER: Record<GachaRarity, number> = {
-  common: 0, uncommon: 1, rare: 2, epic: 3, legendary: 4,
 }
 
 type HistoryItemWithDetails = GachaHistoryEntry & {
@@ -120,8 +115,6 @@ export default function GachaPage() {
   // Animation states
   const [showLoading, setShowLoading] = useState(false)
   const [showCardReveal, setShowCardReveal] = useState(false)
-  const [showResults, setShowResults] = useState(false)
-
   // History & modals
   const [history, setHistory] = useState<HistoryItemWithDetails[]>([])
   const [historyLoading, setHistoryLoading] = useState(true)
@@ -131,10 +124,6 @@ export default function GachaPage() {
   const [selectedHistoryItem, setSelectedHistoryItem] = useState<HistoryItemWithDetails | null>(null)
 
   const tickets = userData?.gachaTickets ?? 0
-
-  const bestRarity: GachaRarity = results.length > 0
-    ? results.reduce((best, r) => RARITY_ORDER[r.rarity] > RARITY_ORDER[best.rarity] ? r : best, results[0]).rarity
-    : 'common'
 
   useEffect(() => {
     if (!userData) return
@@ -197,11 +186,11 @@ export default function GachaPage() {
   const handlePull = async (count: 1 | 10) => {
     if (pulling || showCardReveal || tickets < count) return
 
+    hapticGacha()
     setPulling(true)
     setPullCount(count)
     setResults([])
     setPullError(null)
-    setShowResults(false)
     setShowLoading(true)
 
     const collected: PullResult[] = []
@@ -258,8 +247,6 @@ export default function GachaPage() {
 
   const handleCardRevealComplete = () => {
     setShowCardReveal(false)
-    setShowResults(true)
-
     // Calculate rewards
     let totalPt = 0, totalTk = 0
     for (const r of results) {
@@ -293,9 +280,6 @@ export default function GachaPage() {
 
   return (
     <>
-      {/* Confetti for results */}
-      <GachaConfetti active={showResults && results.length > 0} rarity={bestRarity} />
-
       {/* Loading animation */}
       <GachaPullLoading active={showLoading} pullCount={pullCount} />
 
@@ -338,200 +322,107 @@ export default function GachaPage() {
         />
       )}
 
-      <div className="min-h-screen bg-hatofes-bg pb-8 relative overflow-hidden">
-        {/* WebGL Aurora Background */}
-        <div className="fixed inset-0 z-0">
-          <WebGLAurora intensity="normal" colorScheme="gold" />
-        </div>
+      <UserPageShell username={userData.username} grade={userData.grade} classNumber={userData.class}>
+        <PageHero
+          eyebrow="Lucky Draw"
+          title="Gacha"
+          description="チケットを使ってアイテムを引き、履歴と図鑑の進み具合を確認できます。"
+          aside={<PageBackLink />}
+          badge={busy ? <span className="rounded-full bg-white/[0.06] px-3 py-1 text-xs text-white/60">drawing...</span> : undefined}
+        />
 
-        <div className="relative z-10">
-          <AppHeader
-            username={userData.username}
-            grade={userData.grade}
-            classNumber={userData.class}
-          />
+        <div className="grid gap-4 xl:grid-cols-[0.78fr_1.22fr]">
+          <div className="space-y-4">
+            <PageSection>
+              <PageSectionTitle eyebrow="Balance" title="チケット残数" />
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                <PageMetric label="Tickets" value={tickets.toString()} tone="accent" />
+                <PageMetric label="Recent Pulls" value={history.length.toString()} />
+              </div>
+            </PageSection>
 
-          <main className="max-w-lg mx-auto px-4 py-6 space-y-6">
-            {/* Ticket counter - Glass morphism */}
-            <section className="glass-card text-center fade-in-up">
-              <p className="text-white/60 text-sm mb-1">チケット残数</p>
-              <p className="text-5xl font-bold text-white font-display">
-                <span className="inline-block animate-bounce-subtle">🎫</span>{' '}
-                <span className="text-gradient">{tickets}</span>
-              </p>
-            </section>
+            {pullError ? (
+              <PageSection>
+                <div className="rounded-[1rem] border border-[#7f3137] bg-[#2b171a] p-4 text-sm text-[#ffb8bf]">
+                  {pullError}
+                </div>
+              </PageSection>
+            ) : null}
 
-            {/* Error */}
-            {pullError && (
-              <div className="glass-card bg-red-500/10 border-red-500/30 text-red-400 text-sm text-center">
-                {pullError}
+            <PageSection>
+              <PageSectionTitle eyebrow="Draw" title="抽選" />
+              <div className="space-y-3">
+                <button
+                  onClick={() => handlePull(1)}
+                  disabled={busy || tickets < 1}
+                  className="flex min-h-[84px] w-full items-center justify-between rounded-[1.15rem] bg-[#d9e4dc] px-5 py-4 text-left text-[#11161a] transition-transform hover:-translate-y-0.5 disabled:translate-y-0 disabled:opacity-45"
+                >
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.2em] text-[#11161a]/45">Single Draw</p>
+                    <p className="mt-2 text-xl font-semibold">1回引く</p>
+                  </div>
+                  <span className="rounded-full bg-[#11161a]/10 px-3 py-1 text-sm font-medium">1 ticket</span>
+                </button>
+
+                <button
+                  onClick={() => handlePull(10)}
+                  disabled={busy || tickets < 10}
+                  className="flex min-h-[84px] w-full items-center justify-between rounded-[1.15rem] bg-white/[0.06] px-5 py-4 text-left text-white transition-colors hover:bg-white/[0.09] disabled:opacity-45"
+                >
+                  <div>
+                    <p className="text-[11px] uppercase tracking-[0.2em] text-white/42">Batch Draw</p>
+                    <p className="mt-2 text-xl font-semibold">10回引く</p>
+                  </div>
+                  <span className="rounded-full bg-white/[0.08] px-3 py-1 text-sm font-medium">10 tickets</span>
+                </button>
+              </div>
+
+              <Link
+                to="/gacha/collection"
+                className="mt-4 inline-flex h-11 items-center justify-center rounded-[1rem] border border-white/8 bg-white/[0.04] px-4 text-sm font-medium text-white/78 transition-colors hover:bg-white/[0.08] hover:text-white"
+              >
+                図鑑を見る
+              </Link>
+            </PageSection>
+          </div>
+
+          <PageSection>
+            <PageSectionTitle eyebrow="History" title="引き履歴" />
+            {historyLoading ? (
+              <SkeletonCard count={3} />
+            ) : history.length === 0 ? (
+              <PageEmptyState title="まだガチャを引いていません" description="最初の1回を引くとここに履歴が並びます。" />
+            ) : (
+              <div className="space-y-2">
+                {history.map((entry) => (
+                  <button
+                    key={entry.id}
+                    onClick={() => setSelectedHistoryItem(entry)}
+                    className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-[1.1rem] bg-[#0f1418] px-4 py-3 text-left transition-colors hover:bg-[#131920]"
+                  >
+                    {entry.imageUrl ? (
+                      <img src={entry.imageUrl} alt={entry.itemName} className="h-12 w-12 rounded-[0.9rem] object-cover" />
+                    ) : (
+                      <div className="flex h-12 w-12 items-center justify-center rounded-[0.9rem] bg-white/[0.07] text-lg">
+                        {entry.type === 'points' ? '💰' : entry.type === 'ticket' ? '🎫' : '🎁'}
+                      </div>
+                    )}
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-white">{entry.itemName}</p>
+                      <p className={`mt-1 text-xs font-semibold ${RARITY_COLORS[entry.itemRarity]}`}>{RARITY_LABELS[entry.itemRarity]}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs text-white/38">
+                        {entry.pulledAt?.seconds ? new Date(entry.pulledAt.seconds * 1000).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' }) : ''}
+                      </p>
+                    </div>
+                  </button>
+                ))}
               </div>
             )}
-
-            {/* Pull Buttons */}
-            <div className="space-y-4">
-              <button
-                onClick={() => handlePull(1)}
-                disabled={busy || tickets < 1}
-                className="w-full py-5 rounded-2xl font-bold text-lg transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed glass-card border-2 border-white/20 hover:border-hatofes-accent-yellow/50 hover:shadow-[0_0_30px_rgba(255,195,0,0.3)] active:scale-[0.98]"
-              >
-                {tickets < 1 ? (
-                  <span className="text-white/50">チケットが足りません</span>
-                ) : (
-                  <span className="text-white">🎰 1回引く</span>
-                )}
-              </button>
-
-              <button
-                onClick={() => handlePull(10)}
-                disabled={busy || tickets < 10}
-                className="w-full py-5 rounded-2xl font-bold text-lg transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed glass-card border-2 border-white/20 hover:border-hatofes-accent-yellow/50 hover:shadow-[0_0_30px_rgba(255,195,0,0.3)] active:scale-[0.98]"
-              >
-                {tickets < 10 ? (
-                  <span className="text-white/50">チケットが足りません (10枚必要)</span>
-                ) : (
-                  <span className="text-white">🎰 10回引く</span>
-                )}
-              </button>
-            </div>
-
-            {/* Results display */}
-            {showResults && results.length > 0 && (
-              <section className="glass-card fade-in-up">
-                <h2 className="text-white font-bold mb-3 text-center font-display">
-                  🎊 結果 🎊
-                </h2>
-                <ul className="space-y-2">
-                  {[...results]
-                    .sort((a, b) => RARITY_ORDER[b.rarity] - RARITY_ORDER[a.rarity])
-                    .map((r, i) => {
-                      const isBest = i === 0
-                      return (
-                        <li
-                          key={i}
-                          onClick={() => setSelectedHistoryItem({
-                            id: `result-${i}`,
-                            userId: '',
-                            itemId: r.id,
-                            itemName: r.name,
-                            itemRarity: r.rarity,
-                            pulledAt: { seconds: Date.now() / 1000, nanoseconds: 0 } as import('firebase/firestore').Timestamp,
-                            imageUrl: r.imageUrl,
-                            description: r.description,
-                            type: r.type,
-                            pointsValue: r.pointsValue ?? undefined,
-                            ticketValue: r.ticketValue ?? undefined,
-                          })}
-                          className={`flex items-center justify-between p-3 rounded-xl transition-all cursor-pointer hover:bg-white/10 active:scale-[0.98] ${
-                            isBest ? `border ${RARITY_BG[r.rarity]}` : 'bg-white/5'
-                          }`}
-                          style={{ animationDelay: `${i * 50}ms` }}
-                        >
-                          <div className="flex items-center gap-3">
-                            {r.imageUrl ? (
-                              <img src={r.imageUrl} alt={r.name} className="w-10 h-10 rounded-lg object-cover" />
-                            ) : (
-                              <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-xl ${RARITY_BG[r.rarity].split(' ')[0]}`}>
-                                {r.type === 'points' ? '💰' : r.type === 'ticket' ? '🎫' : '🎁'}
-                              </div>
-                            )}
-                            <div>
-                              <p className={`text-sm ${isBest ? 'font-bold' : ''} text-white`}>{r.name}</p>
-                              <span className={`text-xs font-bold ${RARITY_COLORS[r.rarity]}`}>{RARITY_LABELS[r.rarity]}</span>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {r.type === 'points' && r.pointsValue && (
-                              <span className="text-sm text-hatofes-accent-yellow font-bold font-display">+{r.pointsValue}pt</span>
-                            )}
-                            {r.type === 'ticket' && r.ticketValue && (
-                              <span className="text-sm text-hatofes-accent-yellow font-bold font-display">+{r.ticketValue}🎫</span>
-                            )}
-                          </div>
-                        </li>
-                      )
-                    })
-                  }
-                </ul>
-              </section>
-            )}
-
-            {/* History - Glass morphism */}
-            <section className="glass-card fade-in-up fade-in-delay-2">
-              <h2 className="font-bold text-white mb-4 flex items-center gap-2">
-                📜 引き歴
-              </h2>
-              {historyLoading ? (
-                <SkeletonCard count={3} />
-              ) : history.length === 0 ? (
-                <p className="text-white/50 text-center py-4 text-sm">まだガチャを引いていません</p>
-              ) : (
-                <ul className="space-y-2">
-                  {history.map((entry) => (
-                    <li
-                      key={entry.id}
-                      onClick={() => setSelectedHistoryItem(entry)}
-                      className="flex items-center justify-between py-2.5 px-3 rounded-xl cursor-pointer hover:bg-white/10 transition-all active:scale-[0.98]"
-                    >
-                      <div className="flex items-center gap-3">
-                        {entry.imageUrl ? (
-                          <img src={entry.imageUrl} alt={entry.itemName} className="w-10 h-10 rounded-lg object-cover" />
-                        ) : (
-                          <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-lg ${RARITY_BG[entry.itemRarity].split(' ')[0]}`}>
-                            {entry.type === 'points' ? '💰' : entry.type === 'ticket' ? '🎫' : '🎁'}
-                          </div>
-                        )}
-                        <div>
-                          <p className="text-sm text-white">{entry.itemName}</p>
-                          <p className={`text-xs font-bold ${RARITY_COLORS[entry.itemRarity]}`}>{RARITY_LABELS[entry.itemRarity]}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <p className="text-xs text-white/50">
-                          {entry.pulledAt?.seconds ? new Date(entry.pulledAt.seconds * 1000).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' }) : ''}
-                        </p>
-                        <svg className="w-4 h-4 text-white/30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                        </svg>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <Link to="/home" className="block fade-in-up fade-in-delay-3">
-              <div className="glass-card text-center py-3 text-white/80 hover:text-white hover:bg-white/10 transition-all">
-                ホームに戻る
-              </div>
-            </Link>
-          </main>
+          </PageSection>
         </div>
-      </div>
-
-      <style>{`
-        .glass-card {
-          background: rgba(255, 255, 255, 0.08);
-          backdrop-filter: blur(20px);
-          -webkit-backdrop-filter: blur(20px);
-          border: 1px solid rgba(255, 255, 255, 0.12);
-          border-radius: 1rem;
-          padding: 1rem;
-        }
-        @keyframes bounce-subtle {
-          0%, 100% { transform: translateY(0); }
-          50% { transform: translateY(-3px); }
-        }
-        .animate-bounce-subtle {
-          animation: bounce-subtle 2s ease-in-out infinite;
-        }
-        .text-gradient {
-          background: linear-gradient(90deg, #FFC300, #FF4E00);
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
-          background-clip: text;
-        }
-      `}</style>
+      </UserPageShell>
     </>
   )
 }

@@ -9,7 +9,10 @@ import { PointRewardModal } from '@/components/ui/PointRewardModal'
 import { TetrisLoading } from '@/components/ui/TetrisLoading'
 import { SkeletonCard } from '@/components/ui/SkeletonLoader'
 import { TetrisIcon } from '@/components/ui/Icon'
+import { UserAvatar } from '@/components/ui/UserAvatar'
 import { TetrisScore } from '@/types/firestore'
+import { Toast, useToast } from '@/components/ui/Toast'
+import { hapticLineClear } from '@/lib/haptics'
 
 const fns = getFunctions(app)
 const db = getFirestore(app)
@@ -18,7 +21,7 @@ const submitTetrisScoreFn = httpsCallable<
   { success: boolean; pointsAwarded: number; totalToday: number; maxToday: number; message?: string }
 >(fns, 'submitTetrisScore')
 const getTodayTetrisStatsFn = httpsCallable<
-  {},
+  object,
   { totalToday: number; maxToday: number }
 >(fns, 'getTodayTetrisStats')
 const registerTetrisRankingFn = httpsCallable<
@@ -59,6 +62,10 @@ const pickFrom7Bag = (bagRef: { bag: TShape[]; index: number }): TShape => {
   return bagRef.bag[bagRef.index++]
 }
 
+function getJstDateString(nowMs: number) {
+  return new Date(nowMs + 9 * 60 * 60 * 1000).toISOString().split('T')[0]
+}
+
 /* ── color helpers ── */
 function lighten(hex: string, factor: number): string {
   const n = parseInt(hex.slice(1), 16)
@@ -75,6 +82,7 @@ function darken(hex: string, factor: number): string {
 
 export default function TetrisPage() {
   const { userData, currentUser } = useAuth()
+  const { toast, showToast, hideToast } = useToast()
   const fieldRef     = useRef<HTMLCanvasElement>(null)
   const nextRef      = useRef<HTMLCanvasElement>(null)
   const holdRef      = useRef<HTMLCanvasElement>(null)
@@ -95,6 +103,8 @@ export default function TetrisPage() {
     timer: null as ReturnType<typeof setTimeout> | null,
     bag: [] as TShape[],
     bagIndex: 0,
+    lastRotationWasTSpinCandidate: false,
+    lastClearLabel: '' as '' | 'single' | 'double' | 'triple' | 'tetris' | 'tspin_single' | 'tspin_double' | 'tspin_triple',
   })
 
   const [ui, setUi]             = useState({ score: 0, lines: 0, level: 1, ended: false, paused: false })
@@ -113,6 +123,10 @@ export default function TetrisPage() {
 
   const loopRef = useRef<() => void>(() => {})
 
+  useEffect(() => {
+    window.localStorage.setItem('hatofes:last-opened-tetris', getJstDateString(Date.now()))
+  }, [])
+
   /* ── grid helpers ── */
   const pos = (s: TShape, r: number, px: number, py: number): [number, number][] =>
     s.rot[r].map(([dx, dy]): [number, number] => [
@@ -126,6 +140,29 @@ export default function TetrisPage() {
       if (by >= 0 && G.current.field[by][bx] !== BG) return true
     }
     return false
+  }
+
+  const isFilledCell = (bx: number, by: number): boolean => {
+    if (bx < 0 || bx >= FW || by >= FH) return true
+    if (by < 0) return false
+    return G.current.field[by][bx] !== BG
+  }
+
+  const detectTSpin = (): boolean => {
+    const { shape, rot, x, y, lastRotationWasTSpinCandidate } = G.current
+    if (!shape || shape.color !== '#bf5fff' || !lastRotationWasTSpinCandidate) return false
+
+    const centerX = Math.floor(x / BS)
+    const centerY = Math.floor(y / BS)
+    const corners = [
+      [centerX - 1, centerY - 1],
+      [centerX + 1, centerY - 1],
+      [centerX - 1, centerY + 1],
+      [centerX + 1, centerY + 1],
+    ]
+
+    const filledCorners = corners.filter(([bx, by]) => isFilledCell(bx, by)).length
+    return filledCorners >= 3 && rot >= 0
   }
 
   const ghostY = (): number => {
@@ -270,6 +307,7 @@ export default function TetrisPage() {
     G.current.x     = (FW / 2 - 1) * BS
     G.current.y     = -BS
     G.current.holdUsed = false // ホールドをリセット
+    G.current.lastRotationWasTSpinCandidate = false
     drawNext()
     drawHold()
   }
@@ -282,6 +320,8 @@ export default function TetrisPage() {
       if (bx >= 0 && bx < FW && by < FH) G.current.field[by][bx] = shape.color
     }
     if (over) { G.current.ended = true; setUi(p => ({ ...p, ended: true })); return }
+
+    const isTSpin = detectTSpin()
 
     // detect cleared rows
     const clearedRows: number[] = []
@@ -300,10 +340,19 @@ export default function TetrisPage() {
       G.current.level  = Math.floor(G.current.lines / 10) + 1
       // 列を消すごとに速度を速くする（1列ごとに12ms速く、最低100ms）
       G.current.speed  = Math.max(100, 800 - G.current.lines * 12)
-      const pts = [0, 25, 100, 400, 1600]
-      G.current.score += (pts[cleared] || 0) * G.current.level
+      const normalScores = [0, 25, 100, 400, 1600]
+      const tSpinScores = [0, 800, 1200, 1600]
+      const gainedScore = isTSpin
+        ? (tSpinScores[cleared] || normalScores[cleared] || 0) * G.current.level
+        : (normalScores[cleared] || 0) * G.current.level
+      G.current.score += gainedScore
+      G.current.lastClearLabel = isTSpin
+        ? (cleared === 1 ? 'tspin_single' : cleared === 2 ? 'tspin_double' : 'tspin_triple')
+        : (cleared === 1 ? 'single' : cleared === 2 ? 'double' : cleared === 3 ? 'triple' : 'tetris')
+      hapticLineClear(cleared)
       setUi(p => ({ ...p, score: G.current.score, lines: G.current.lines, level: G.current.level }))
     }
+    G.current.lastRotationWasTSpinCandidate = false
   }
 
   const doRotate = () => {
@@ -311,7 +360,7 @@ export default function TetrisPage() {
     if (!shape || G.current.ended || G.current.paused) return
     const nr = (rot + 1) % 4
     for (const k of [0, BS, -BS, BS * 2, -BS * 2])
-      if (!hit(shape, nr, x + k, y)) { G.current.rot = nr; G.current.x = x + k; draw(); return }
+      if (!hit(shape, nr, x + k, y)) { G.current.rot = nr; G.current.x = x + k; G.current.lastRotationWasTSpinCandidate = true; draw(); return }
   }
   // 逆回転（反時計回り）
   const doRotateCCW = () => {
@@ -319,7 +368,7 @@ export default function TetrisPage() {
     if (!shape || G.current.ended || G.current.paused) return
     const nr = (rot + 3) % 4 // -1 mod 4 = 3
     for (const k of [0, BS, -BS, BS * 2, -BS * 2])
-      if (!hit(shape, nr, x + k, y)) { G.current.rot = nr; G.current.x = x + k; draw(); return }
+      if (!hit(shape, nr, x + k, y)) { G.current.rot = nr; G.current.x = x + k; G.current.lastRotationWasTSpinCandidate = true; draw(); return }
   }
   // ホールド
   const doHold = () => {
@@ -340,6 +389,7 @@ export default function TetrisPage() {
     G.current.rot = 0
     G.current.x = (FW / 2 - 1) * BS
     G.current.y = -BS
+    G.current.lastRotationWasTSpinCandidate = false
     setHoldPiece(G.current.hold)
     drawHold()
     draw()
@@ -348,12 +398,12 @@ export default function TetrisPage() {
   const doLeft = () => {
     const { shape, rot, x, y } = G.current
     if (!shape || G.current.ended || G.current.paused) return
-    if (!hit(shape, rot, x - BS, y)) { G.current.x -= BS; draw() }
+    if (!hit(shape, rot, x - BS, y)) { G.current.x -= BS; G.current.lastRotationWasTSpinCandidate = false; draw() }
   }
   const doRight = () => {
     const { shape, rot, x, y } = G.current
     if (!shape || G.current.ended || G.current.paused) return
-    if (!hit(shape, rot, x + BS, y)) { G.current.x += BS; draw() }
+    if (!hit(shape, rot, x + BS, y)) { G.current.x += BS; G.current.lastRotationWasTSpinCandidate = false; draw() }
   }
   const doDown = () => {
     const { shape, rot, x, y } = G.current
@@ -447,10 +497,10 @@ export default function TetrisPage() {
       setShowRegisterButton(false)
       // ランキング更新
       await fetchRankings()
-      alert('ランキングに登録しました！')
+      showToast('ランキングに登録しました！', 'success')
     } catch (err) {
       console.error('[Tetris] ランキング登録エラー:', err)
-      alert('ランキング登録に失敗しました')
+      showToast('ランキング登録に失敗しました', 'error')
     } finally {
       setIsRegistering(false)
     }
@@ -491,8 +541,9 @@ export default function TetrisPage() {
     fetchRankings()
     fetchTodayStats()
 
+    const game = G.current
     return () => {
-      if (G.current.timer) clearTimeout(G.current.timer)
+      if (game.timer) clearTimeout(game.timer)
       if (holdTimerRef.current) clearInterval(holdTimerRef.current)
       if (flashRafRef.current) cancelAnimationFrame(flashRafRef.current)
     }
@@ -608,10 +659,8 @@ export default function TetrisPage() {
     // ランキング登録ボタンを表示
     setShowRegisterButton(true)
 
-    // ゲーム終了後、ランキングタブに自動遷移
+    // ゲーム終了後にランキングを更新
     setTimeout(() => {
-      setActiveTab('ranking')
-      // ランキングを再取得
       fetchRankings()
     }, 1500)
   }, [ui.ended]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -641,26 +690,60 @@ export default function TetrisPage() {
 
   return (
     <div className="min-h-screen bg-hatofes-bg pb-8">
+      {toast && <Toast message={toast.message} type={toast.type} onClose={hideToast} />}
       <AppHeader username={userData.username} grade={userData.grade} classNumber={userData.class} />
 
       {showReward && reward !== null && reward > 0 && (
         <PointRewardModal isOpen={showReward} points={reward} reason="テトリスで獲得" onClose={() => setShowReward(false)} />
       )}
 
-      <main className="max-w-lg mx-auto px-2 sm:px-4 py-3 sm:py-4">
+      <main className="max-w-4xl mx-auto px-3 sm:px-4 py-4 sm:py-5">
 
         {/* page header */}
-        <div className="mb-3">
-          <h1 className="text-lg font-bold text-hatofes-white flex items-center gap-2 mb-3">
-            <TetrisIcon size={24} /> テトリス
-          </h1>
+        <div className="mb-4">
+          {!(activeTab === 'game' && gameStarted) ? (
+            <div className="mb-3 rounded-2xl border border-white/8 bg-[#141920] p-4 shadow-[0_12px_32px_rgba(0,0,0,0.24)]">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-[11px] font-display tracking-[0.22em] text-white/42">ARCADE MODE</p>
+                  <h1 className="mt-2 flex items-center gap-2 text-2xl font-bold text-hatofes-white">
+                    <TetrisIcon size={26} /> テトリス
+                  </h1>
+                  <p className="mt-2 text-sm text-hatofes-gray-light">
+                    行を消してスコアを積み、ランキングと鳩ポイントの両方を狙うゲームモードです。
+                  </p>
+                </div>
+                <div className="flex-shrink-0 text-right">
+                  <Link
+                    to="/home"
+                    className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-[0.95rem] border border-white/10 bg-black/18 px-4 text-xs font-medium text-white/80 transition-colors hover:bg-white/[0.08] hover:text-white"
+                  >
+                    ホームに戻る
+                  </Link>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <TetrisIcon size={22} />
+                <h1 className="text-lg font-bold text-hatofes-white">テトリス</h1>
+              </div>
+              <Link
+                to="/home"
+                className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-[0.9rem] border border-white/10 bg-black/18 px-3 text-xs font-medium text-white/80 transition-colors hover:bg-white/[0.08] hover:text-white"
+              >
+                ホームへ
+              </Link>
+            </div>
+          )}
           {/* タブ切り替え */}
-          <div className="flex border-b border-hatofes-gray/30">
+          <div className="grid grid-cols-3 gap-2 rounded-2xl border border-hatofes-gray/20 bg-hatofes-dark/70 p-1.5">
             <button
               onClick={() => setActiveTab('game')}
-              className={`flex-1 py-2 text-sm font-medium transition-colors flex items-center justify-center gap-1 ${
+              className={`rounded-xl py-2.5 text-sm font-medium transition-all flex items-center justify-center gap-1 ${
                 activeTab === 'game'
-                  ? 'text-hatofes-accent-yellow border-b-2 border-hatofes-accent-yellow'
+                  ? 'bg-hatofes-bg text-hatofes-accent-yellow shadow-[0_8px_18px_rgba(0,0,0,0.24)]'
                   : 'text-hatofes-gray hover:text-hatofes-white'
               }`}
             >
@@ -669,9 +752,9 @@ export default function TetrisPage() {
             </button>
             <button
               onClick={() => setActiveTab('ranking')}
-              className={`flex-1 py-2 text-sm font-medium transition-colors flex items-center justify-center gap-1 ${
+              className={`rounded-xl py-2.5 text-sm font-medium transition-all flex items-center justify-center gap-1 ${
                 activeTab === 'ranking'
-                  ? 'text-hatofes-accent-orange border-b-2 border-hatofes-accent-orange'
+                  ? 'bg-hatofes-bg text-hatofes-accent-orange shadow-[0_8px_18px_rgba(0,0,0,0.24)]'
                   : 'text-hatofes-gray hover:text-hatofes-white'
               }`}
             >
@@ -680,9 +763,9 @@ export default function TetrisPage() {
             </button>
             <button
               onClick={() => setActiveTab('rules')}
-              className={`flex-1 py-2 text-sm font-medium transition-colors flex items-center justify-center gap-1 ${
+              className={`rounded-xl py-2.5 text-sm font-medium transition-all flex items-center justify-center gap-1 ${
                 activeTab === 'rules'
-                  ? 'text-hatofes-accent-yellow border-b-2 border-hatofes-accent-yellow'
+                  ? 'bg-hatofes-bg text-hatofes-accent-yellow shadow-[0_8px_18px_rgba(0,0,0,0.24)]'
                   : 'text-hatofes-gray hover:text-hatofes-white'
               }`}
             >
@@ -718,14 +801,15 @@ export default function TetrisPage() {
                           : 'bg-hatofes-dark/50'
                       }`}
                     >
-                      <div className="flex items-center gap-3 flex-1 min-w-0">
-                        <div className="flex-shrink-0 w-6 text-center">
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <div className="flex-shrink-0 w-5 text-center">
                           {medal ? (
-                            <span className="text-lg">{medal}</span>
+                            <span className="text-base">{medal}</span>
                           ) : (
-                            <span className="text-hatofes-gray font-bold text-sm">{idx + 1}</span>
+                            <span className="text-hatofes-gray font-bold text-xs">{idx + 1}</span>
                           )}
                         </div>
+                        <UserAvatar name={r.username} imageUrl={r.profileImageUrl} size="sm" />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <p className={`font-bold truncate ${isCurrentUser ? 'text-hatofes-accent-yellow' : 'text-hatofes-white'}`}>
@@ -840,6 +924,16 @@ export default function TetrisPage() {
                         <td className="py-1.5 text-hatofes-accent-yellow text-xs font-bold font-display">{score}</td>
                       </tr>
                     ))}
+                    {[
+                      ['T-Spin Single', '800 × レベル'],
+                      ['T-Spin Double', '1200 × レベル'],
+                      ['T-Spin Triple', '1600 × レベル'],
+                    ].map(([lines, score]) => (
+                      <tr key={lines} className="border-t border-hatofes-gray/15">
+                        <td className="py-1.5 text-cyan-300 text-xs">{lines}</td>
+                        <td className="py-1.5 text-cyan-300 text-xs font-bold font-display">{score}</td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -874,6 +968,7 @@ export default function TetrisPage() {
               </div>
               <p className="text-hatofes-gray/50 text-xs mt-1.5">
                 ※ 生徒ロールのみ対象<br />
+                ※ 鳩ポイントはゲームスコアではなく「その日に消した累計列数」で計算されます<br />
                 ※ 列数カウントは毎日0時にリセットされます
               </p>
             </div>
@@ -882,142 +977,157 @@ export default function TetrisPage() {
 
         {/* ── ゲームタブ ── */}
         {activeTab === 'game' && !gameStarted && (
-          <div className="card text-center py-8">
-            <div className="mb-6">
-              <div className="flex justify-center mb-4">
-                <TetrisIcon size={64} />
-              </div>
-              <h2 className="text-2xl font-bold text-hatofes-white mb-2">テトリス</h2>
-              <p className="text-hatofes-gray text-sm">行を消してポイントをゲット！</p>
-            </div>
-
-            {/* 今日の統計 */}
-            {isStudent && todayStats && (
-              <div className="mb-6 px-4 py-3 bg-hatofes-dark/50 rounded-lg inline-block">
-                <p className="text-xs text-hatofes-gray mb-1">本日の累計消した列数</p>
-                <p className="font-display font-bold text-hatofes-white text-lg">
-                  {todayStats.totalToday} <span className="text-sm text-hatofes-gray">/ {todayStats.maxToday}列</span>
+          <div className="card border border-cyan-500/20 bg-gradient-to-br from-cyan-500/10 via-hatofes-dark to-purple-500/10 py-8 shadow-[0_14px_36px_rgba(0,0,0,0.26)]">
+            <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
+              <div className="text-center lg:text-left">
+                <div className="mb-4 flex justify-center lg:justify-start">
+                  <div className="rounded-2xl border border-white/8 bg-[#0f1418] p-4 shadow-[0_10px_24px_rgba(0,0,0,0.22)]">
+                    <TetrisIcon size={64} />
+                  </div>
+                </div>
+                <h2 className="text-3xl font-bold text-hatofes-white mb-2">テトリス</h2>
+                <p className="text-hatofes-gray text-sm leading-relaxed">
+                  行を消してスコアを伸ばし、ランキングと鳩ポイントの両方を狙うモードです。
                 </p>
+                <div className="mt-5 grid grid-cols-3 gap-2 text-left">
+                  {[
+                    ['MOVE', '← → / A D'],
+                    ['ROTATE', 'Q E / ↑'],
+                    ['DROP', 'Space / W'],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-xl border border-white/8 bg-[#0f1418] px-3 py-3">
+                      <p className="text-[10px] font-display tracking-[0.18em] text-hatofes-gray">{label}</p>
+                      <p className="mt-1 text-xs text-hatofes-white">{value}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
-            )}
 
-            <button
-              onClick={startGame}
-              className="btn-main px-12 py-4 text-lg font-bold bg-gradient-to-r from-hatofes-accent-yellow to-hatofes-accent-orange flex items-center justify-center gap-2 mx-auto"
-            >
-              <svg className="w-6 h-6" viewBox="0 0 24 24" fill="currentColor"><path d="M21 6H3c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-10 7H8v3H6v-3H3v-2h3V8h2v3h3v2zm4.5 2c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm4-3c-.83 0-1.5-.67-1.5-1.5S18.67 9 19.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>
-              ゲームスタート
-            </button>
-
-            <p className="text-xs text-hatofes-gray mt-4">
-              操作方法は「ルール」タブで確認できます
-            </p>
+              <div className="text-center">
+                <div className="rounded-2xl border border-white/8 bg-[#0f1418] p-5">
+                  <p className="text-xs font-display tracking-[0.2em] text-hatofes-gray">TODAY STATUS</p>
+                  {isStudent && todayStats ? (
+                    <div className="mt-4">
+                      <p className="font-display text-4xl text-hatofes-white">{todayStats.totalToday}</p>
+                      <p className="mt-1 text-sm text-hatofes-gray">/ {todayStats.maxToday}列</p>
+                    </div>
+                  ) : (
+                    <p className="mt-4 text-sm text-hatofes-gray">ランキング対象外のロールです</p>
+                  )}
+                  <button
+                    onClick={startGame}
+                    className="mt-6 flex w-full items-center justify-center gap-2 rounded-[1rem] border border-white/10 bg-white px-4 py-4 text-lg font-bold text-[#11161a] shadow-[0_10px_24px_rgba(255,255,255,0.08)] transition-opacity hover:opacity-92"
+                  >
+                    <svg className="w-6 h-6" viewBox="0 0 24 24" fill="currentColor"><path d="M21 6H3c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-10 7H8v3H6v-3H3v-2h3V8h2v3h3v2zm4.5 2c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm4-3c-.83 0-1.5-.67-1.5-1.5S18.67 9 19.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>
+                    ゲームスタート
+                  </button>
+                  <p className="text-xs text-hatofes-gray mt-4">
+                    操作方法は「ルール」タブで確認できます
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
         {activeTab === 'game' && gameStarted && (
           <>
-        {/* ── 今日の累計 (学生のみ) ── */}
-        {isStudent && todayStats && (
-          <div className="card mb-2 py-2 px-3 bg-gradient-to-r from-hatofes-accent-yellow/5 to-transparent border-l-2 border-hatofes-accent-yellow/40">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <svg className="w-5 h-5 text-hatofes-accent-yellow" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
-                <div>
-                  <p className="text-xs text-hatofes-gray">本日の累計消した列数</p>
-                  <p className="font-display font-bold text-hatofes-white">
-                    {todayStats.totalToday} <span className="text-xs text-hatofes-gray">/ {todayStats.maxToday}列</span>
-                  </p>
+        <div className="tetris-game-shell rounded-[1.25rem] border border-white/8 bg-[#141920] p-3 shadow-[0_16px_40px_rgba(0,0,0,0.28)]">
+          {/* ── 今日の累計 (学生のみ) ── */}
+          {isStudent && todayStats && (
+            <div className="mb-3 rounded-2xl border border-hatofes-accent-yellow/15 bg-hatofes-dark/70 px-4 py-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <svg className="w-5 h-5 text-hatofes-accent-yellow" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
+                  <div>
+                    <p className="text-xs text-hatofes-gray">本日の累計消した列数</p>
+                    <p className="font-display font-bold text-hatofes-white">
+                      {todayStats.totalToday} <span className="text-xs text-hatofes-gray">/ {todayStats.maxToday}列</span>
+                    </p>
+                  </div>
+                </div>
+                <div className="text-right text-xs text-hatofes-gray">
+                  毎日0時リセット
                 </div>
               </div>
-              <div className="text-right text-xs text-hatofes-gray">
-                毎日0時リセット
-              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* ── stats bar (responsive) ── */}
-        <div className="card mb-2 py-2 px-2 sm:px-3">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex gap-3 sm:gap-5 flex-shrink-0">
-              {([
-                ['スコア', ui.score.toLocaleString(), 'text-hatofes-white'],
-                ['ライン', String(ui.lines),          'text-hatofes-white'],
-                ['Lv', String(ui.level),          'text-hatofes-accent-yellow'],
-              ] as const).map(([label, val, cls]) => (
-                <div key={label} className="min-w-0">
-                  <p className="text-[10px] sm:text-xs text-hatofes-gray leading-tight">{label}</p>
-                  <p className={`font-display font-bold text-xs sm:text-sm ${cls}`}>{val}</p>
+          {/* ── stats bar (responsive) ── */}
+          <div className="tetris-status-card rounded-2xl border border-white/8 bg-hatofes-dark/72 p-3">
+              <div className="grid grid-cols-3 gap-2 mb-3">
+                {([
+                  ['スコア', ui.score.toLocaleString(), 'text-hatofes-white'],
+                  ['ライン', String(ui.lines), 'text-hatofes-white'],
+                  ['Lv', String(ui.level), 'text-hatofes-accent-yellow'],
+                ] as const).map(([label, val, cls]) => (
+                  <div key={label} className="rounded-xl border border-white/6 bg-hatofes-bg/80 px-3 py-3">
+                    <p className="text-[10px] sm:text-xs text-hatofes-gray leading-tight">{label}</p>
+                    <p className={`mt-1 font-display font-bold text-sm sm:text-lg ${cls}`}>{val}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="tetris-preview-row flex items-start justify-center gap-3">
+                <div className="flex flex-col items-center gap-1.5">
+                  <p className="text-[10px] sm:text-xs tracking-[0.18em] text-hatofes-gray">HOLD</p>
+                  <div className={`tetris-next-box tetris-preview-small sm:tetris-preview-normal ${G.current.holdUsed ? 'opacity-40' : ''}`}>
+                    <canvas ref={holdRef} width={BS * 4} height={BS * 4} className="block tetris-preview-canvas" />
+                  </div>
                 </div>
-              ))}
-            </div>
-            <div className="flex items-center gap-1.5 sm:gap-3 flex-shrink-0">
-              {/* Hold */}
-              <div className="flex flex-col sm:flex-row items-center gap-0.5 sm:gap-1.5">
-                <p className="text-[9px] sm:text-xs text-hatofes-gray">HOLD</p>
-                <div className={`tetris-next-box tetris-preview-small sm:tetris-preview-normal ${G.current.holdUsed ? 'opacity-40' : ''}`}>
-                  <canvas ref={holdRef} width={BS * 4} height={BS * 4} className="block tetris-preview-canvas" />
+                <div className="flex flex-col items-center gap-1.5">
+                  <p className="text-[10px] sm:text-xs tracking-[0.18em] text-hatofes-gray">NEXT</p>
+                  <div className="tetris-next-box tetris-preview-small sm:tetris-preview-normal">
+                    <canvas ref={nextRef} width={BS * 4} height={BS * 4} className="block tetris-preview-canvas" />
+                  </div>
                 </div>
               </div>
-              {/* Next */}
-              <div className="flex flex-col sm:flex-row items-center gap-0.5 sm:gap-1.5">
-                <p className="text-[9px] sm:text-xs text-hatofes-gray">次</p>
-                <div className="tetris-next-box tetris-preview-small sm:tetris-preview-normal">
-                  <canvas ref={nextRef} width={BS * 4} height={BS * 4} className="block tetris-preview-canvas" />
-                </div>
+          </div>
+
+          {/* ── field ── */}
+          <div className="mt-3 flex justify-center">
+              <div className="tetris-field-wrap relative">
+                <canvas ref={fieldRef} width={FW * BS} height={FH * BS} className="block tetris-field-canvas" />
+                {ui.ended && (
+                  <div className="absolute inset-0 flex items-center justify-center p-4 bg-[rgba(10,10,30,0.82)] backdrop-blur-[2px]">
+                    <div className="w-full max-w-[280px] rounded-2xl border border-red-500/25 bg-red-500/10 p-4 text-center shadow-[0_14px_30px_rgba(0,0,0,0.28)]">
+                      <p className="text-red-400 font-bold text-lg mb-2">GAME OVER</p>
+                      <div className="flex justify-center gap-8 mb-2">
+                        <div><p className="text-xs text-hatofes-gray">ライン</p><p className="font-display font-bold text-hatofes-white text-lg">{ui.lines}</p></div>
+                        <div><p className="text-xs text-hatofes-gray">スコア</p><p className="font-display font-bold text-hatofes-white text-lg">{ui.score.toLocaleString()}</p></div>
+                      </div>
+                      {isStudent && reward === null && <p className="text-hatofes-gray text-xs mb-2">スコア送信中...</p>}
+                      {isStudent && reward !== null && tetrisResult && (
+                        <div className="mb-2">
+                          <p className="text-hatofes-gray text-xs">
+                            本日の累計: <span className="font-bold text-hatofes-white">{tetrisResult.totalToday}列</span> / {tetrisResult.maxToday}列
+                          </p>
+                          {tetrisResult.message && <p className="text-hatofes-accent-orange text-xs mt-1">{tetrisResult.message}</p>}
+                          {reward === 0 && <p className="text-hatofes-gray text-xs mt-1">今回はポイント付与なし</p>}
+                        </div>
+                      )}
+                      {!isStudent && <p className="text-hatofes-gray text-xs mb-2">ポイント付与は生徒ロールのみ対象です</p>}
+                      {showRegisterButton && (
+                        <div className="mb-3 pt-2 border-t border-hatofes-gray/20">
+                          <p className="text-hatofes-gray text-xs mb-2">この記録をランキングに登録しますか？</p>
+                          <button
+                            onClick={handleRegisterRanking}
+                            disabled={isRegistering}
+                            className="btn-main px-6 py-2 bg-gradient-to-r from-hatofes-accent-yellow to-hatofes-accent-orange disabled:opacity-50"
+                          >
+                            {isRegistering ? '登録中...' : 'ランキングに登録する'}
+                          </button>
+                        </div>
+                      )}
+                      <button onClick={startGame} className="btn-main px-8 py-2">もう一度プレイ</button>
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
           </div>
         </div>
-
-        {/* ── field ── */}
-        <div className="flex justify-center">
-          <div className="tetris-field-wrap">
-            <canvas ref={fieldRef} width={FW * BS} height={FH * BS} className="block tetris-field-canvas" />
-          </div>
-        </div>
-
-        {/* ── game over card ── */}
-        {ui.ended && (
-          <div className="card mt-3 text-center border border-red-500/25 bg-red-500/5">
-            <p className="text-red-400 font-bold text-lg mb-2">GAME OVER</p>
-            <div className="flex justify-center gap-8 mb-2">
-              <div><p className="text-xs text-hatofes-gray">ライン</p><p className="font-display font-bold text-hatofes-white text-lg">{ui.lines}</p></div>
-              <div><p className="text-xs text-hatofes-gray">スコア</p><p className="font-display font-bold text-hatofes-white text-lg">{ui.score.toLocaleString()}</p></div>
-            </div>
-            {isStudent && reward === null && <p className="text-hatofes-gray text-xs mb-2">スコア送信中...</p>}
-            {isStudent && reward !== null && tetrisResult && (
-              <div className="mb-2">
-                <p className="text-hatofes-gray text-xs">
-                  本日の累計: <span className="font-bold text-hatofes-white">{tetrisResult.totalToday}列</span> / {tetrisResult.maxToday}列
-                </p>
-                {tetrisResult.message && <p className="text-hatofes-accent-orange text-xs mt-1">{tetrisResult.message}</p>}
-                {reward === 0 && <p className="text-hatofes-gray text-xs mt-1">今回はポイント付与なし</p>}
-              </div>
-            )}
-            {!isStudent && <p className="text-hatofes-gray text-xs mb-2">ポイント付与は生徒ロールのみ対象です</p>}
-
-            {/* ランキング登録ボタン */}
-            {showRegisterButton && (
-              <div className="mb-3 pt-2 border-t border-hatofes-gray/20">
-                <p className="text-hatofes-gray text-xs mb-2">この記録をランキングに登録しますか？</p>
-                <button
-                  onClick={handleRegisterRanking}
-                  disabled={isRegistering}
-                  className="btn-main px-6 py-2 bg-gradient-to-r from-hatofes-accent-yellow to-hatofes-accent-orange disabled:opacity-50"
-                >
-                  {isRegistering ? '登録中...' : 'ランキングに登録する'}
-                </button>
-              </div>
-            )}
-
-            <button onClick={startGame} className="btn-main px-8 py-2">もう一度プレイ</button>
-          </div>
-        )}
 
         {/* ── touch controls ── */}
-        <div className="mt-3 sm:mt-4 flex justify-center px-2" style={{ touchAction: 'none' }}>
+        <div className="tetris-controls-wrap mt-4 sm:mt-5 flex justify-center px-2" style={{ touchAction: 'none' }}>
           <div className="tetris-pad-v2">
             {/* Row 1: Hold, Pause */}
             <div className="tetris-row-top">
@@ -1048,23 +1158,21 @@ export default function TetrisPage() {
         </div>
           </>
         )}
-
-        {/* back */}
-        <Link to="/home" className="block mt-5">
-          <div className="btn-sub w-full py-3 text-center">ホームに戻る</div>
-        </Link>
       </main>
 
       {/* ── scoped styles ── */}
       <style>{`
         /* animated gradient border */
         .tetris-field-wrap {
-          padding: 3px;
-          border-radius: 8px;
+          padding: 4px;
+          border-radius: 18px;
           background: linear-gradient(135deg, #3a7bd5, #bf5fff, #00d4ff, #ff9f43);
           background-size: 300% 300%;
           animation: tetris-border 5s ease infinite;
-          box-shadow: 0 0 10px rgba(100,100,255,0.22);
+          box-shadow:
+            0 18px 34px rgba(0,0,0,0.28),
+            0 0 0 1px rgba(255,255,255,0.08) inset,
+            0 0 20px rgba(100,100,255,0.12);
           max-width: 100%;
           overflow: hidden;
         }
@@ -1074,7 +1182,7 @@ export default function TetrisPage() {
           100% { background-position: 0% 50%; }
         }
         .tetris-field-canvas {
-          border-radius: 5px;
+          border-radius: 14px;
           display: block;
           max-width: 100%;
           height: auto;
@@ -1082,10 +1190,13 @@ export default function TetrisPage() {
 
         /* next/hold preview box */
         .tetris-next-box {
-          border: 1px solid rgba(255,255,255,0.13);
-          border-radius: 6px;
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 12px;
           overflow: hidden;
-          background: #141428;
+          background: linear-gradient(180deg, rgba(20,20,40,0.96), rgba(11,11,24,0.96));
+          box-shadow:
+            0 8px 18px rgba(0,0,0,0.24),
+            inset 0 1px 0 rgba(255,255,255,0.06);
         }
 
         /* Responsive preview sizes */
@@ -1097,6 +1208,58 @@ export default function TetrisPage() {
           .tetris-preview-normal .tetris-preview-canvas {
             width: 55px !important;
             height: 55px !important;
+          }
+        }
+
+        @media (max-height: 740px) {
+          .tetris-game-shell {
+            padding: 10px;
+          }
+          .tetris-status-card {
+            padding: 10px;
+          }
+          .tetris-preview-row {
+            gap: 10px;
+          }
+          .tetris-field-canvas {
+            width: 180px !important;
+          }
+          .tetris-preview-small .tetris-preview-canvas {
+            width: 34px !important;
+            height: 34px !important;
+          }
+          .tetris-controls-wrap {
+            margin-top: 10px !important;
+          }
+          .tetris-pad-v2 {
+            max-width: 240px;
+            gap: 6px;
+          }
+          .tetris-btn {
+            padding: 10px 0;
+            font-size: 16px;
+          }
+          .tetris-btn--hold,
+          .tetris-btn--pause {
+            font-size: 10px;
+          }
+        }
+
+        @media (max-height: 640px) {
+          .tetris-field-canvas {
+            width: 148px !important;
+          }
+          .tetris-pad-v2 {
+            max-width: 220px;
+          }
+          .tetris-btn {
+            padding: 8px 0;
+            font-size: 15px;
+            border-radius: 14px;
+          }
+          .tetris-preview-small .tetris-preview-canvas {
+            width: 30px !important;
+            height: 30px !important;
           }
         }
 
@@ -1129,17 +1292,19 @@ export default function TetrisPage() {
 
         /* base button - responsive */
         .tetris-btn {
-          background: linear-gradient(160deg, #26263a 0%, #1a1a2a 100%);
+          background: #171c22;
           border: 1px solid rgba(255,255,255,0.1);
-          border-radius: 12px;
+          border-radius: 16px;
           padding: 12px 0;
-          color: #ddd;
+          color: #f3f4f6;
           font-size: 18px;
           user-select: none;
           -webkit-user-select: none;
           touch-action: manipulation;
           cursor: pointer;
-          box-shadow: 0 3px 6px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08);
+          box-shadow:
+            0 10px 20px rgba(0,0,0,0.28),
+            inset 0 1px 0 rgba(255,255,255,0.05);
           transition: transform 0.07s, box-shadow 0.07s;
         }
         @media (min-width: 360px) {
@@ -1156,22 +1321,22 @@ export default function TetrisPage() {
           }
         }
         .tetris-btn:active {
-          transform: scale(0.90) translateY(2px);
-          box-shadow: 0 1px 2px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.04);
+          transform: scale(0.94) translateY(2px);
+          box-shadow: 0 5px 10px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.03);
         }
 
         /* rotate CW – cyan accent */
         .tetris-btn--rot {
           color: #00d4ff;
           border-color: rgba(0,212,255,0.22);
-          box-shadow: 0 3px 6px rgba(0,0,0,0.35), 0 0 8px rgba(0,212,255,0.12), inset 0 1px 0 rgba(255,255,255,0.08);
+          box-shadow: 0 8px 18px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.05);
         }
 
         /* rotate CCW – purple accent */
         .tetris-btn--rotccw {
           color: #bf5fff;
           border-color: rgba(191,95,255,0.22);
-          box-shadow: 0 3px 6px rgba(0,0,0,0.35), 0 0 8px rgba(191,95,255,0.12), inset 0 1px 0 rgba(255,255,255,0.08);
+          box-shadow: 0 8px 18px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.05);
         }
 
         /* hold – green accent */
@@ -1182,21 +1347,21 @@ export default function TetrisPage() {
           letter-spacing: 0.05em;
           color: #4ade80;
           border-color: rgba(74,222,128,0.22);
-          box-shadow: 0 3px 6px rgba(0,0,0,0.35), 0 0 6px rgba(74,222,128,0.1), inset 0 1px 0 rgba(255,255,255,0.08);
+          box-shadow: 0 8px 18px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.05);
         }
 
         /* hard drop – gradient fire */
         .tetris-btn--hard {
-          background: linear-gradient(135deg, #FF4E00 0%, #FFC300 100%);
-          border-color: transparent;
-          color: #fff;
+          background: #f3f4f6;
+          border-color: rgba(255,255,255,0.32);
+          color: #11161a;
           font-weight: 700;
           font-size: 23px;
-          box-shadow: 0 3px 10px rgba(255,78,0,0.4), inset 0 1px 0 rgba(255,255,255,0.22);
+          box-shadow: 0 10px 22px rgba(0,0,0,0.22);
         }
         .tetris-btn--hard:active {
-          background: linear-gradient(135deg, #e64500 0%, #e6b000 100%);
-          box-shadow: 0 1px 4px rgba(255,78,0,0.3);
+          background: #e5e7eb;
+          box-shadow: 0 4px 10px rgba(0,0,0,0.18);
         }
 
         /* pause – subtle */
@@ -1206,6 +1371,63 @@ export default function TetrisPage() {
           font-weight: 700;
           color: #999;
           letter-spacing: 0.02em;
+        }
+
+        [data-theme="light"] .tetris-game-shell {
+          background: var(--color-bg-secondary);
+          border-color: var(--color-border-light);
+          box-shadow: 0 18px 40px rgba(15,23,42,0.08);
+        }
+
+        [data-theme="light"] .tetris-status-card {
+          background: var(--color-bg-card);
+          border-color: var(--color-border-light);
+        }
+
+        [data-theme="light"] .tetris-status-card .text-hatofes-gray {
+          color: var(--color-text-secondary) !important;
+        }
+
+        [data-theme="light"] .tetris-status-card .text-hatofes-white {
+          color: var(--color-text-primary) !important;
+        }
+
+        [data-theme="light"] .tetris-status-card > div > div {
+          background: var(--color-bg-elevated);
+          border-color: var(--color-border-light);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.45);
+        }
+
+        [data-theme="light"] .tetris-next-box {
+          background: var(--color-bg-elevated);
+          border-color: var(--color-border-light);
+          box-shadow: 0 10px 22px rgba(15,23,42,0.08), inset 0 1px 0 rgba(255,255,255,0.5);
+        }
+
+        [data-theme="light"] .tetris-btn {
+          background: var(--color-bg-card);
+          color: var(--color-text-primary);
+          border-color: var(--color-border-light);
+          box-shadow: 0 10px 20px rgba(15,23,42,0.08), inset 0 1px 0 rgba(255,255,255,0.55);
+        }
+
+        [data-theme="light"] .tetris-btn--rot {
+          color: #0891b2;
+          border-color: rgba(8,145,178,0.24);
+        }
+
+        [data-theme="light"] .tetris-btn--rotccw {
+          color: #9333ea;
+          border-color: rgba(147,51,234,0.22);
+        }
+
+        [data-theme="light"] .tetris-btn--hold {
+          color: #16a34a;
+          border-color: rgba(22,163,74,0.22);
+        }
+
+        [data-theme="light"] .tetris-btn--pause {
+          color: var(--color-text-secondary);
         }
       `}</style>
     </div>

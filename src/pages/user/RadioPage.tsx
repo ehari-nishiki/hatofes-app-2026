@@ -1,24 +1,21 @@
-import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
-import {
-  collection,
-  query,
-  orderBy,
-  getDocs,
-  doc,
-  setDoc,
-  onSnapshot,
-  Timestamp,
-  where,
-  limit,
-} from 'firebase/firestore'
+import { useEffect, useState } from 'react'
+import { collection, doc, getDocs, limit, onSnapshot, orderBy, query, setDoc, Timestamp, where } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { useAuth } from '@/contexts/AuthContext'
-import AppHeader from '@/components/layout/AppHeader'
 import RadioPlayer from '@/components/radio/RadioPlayer'
 import { Spinner } from '@/components/ui/Spinner'
-import { RadioIcon } from '@/components/ui/Icon'
+import { Toast, useToast } from '@/components/ui/Toast'
+import { LiveReactions } from '@/components/ui/LiveReactions'
 import type { RadioConfig, RadioProgram, RadioRequest } from '@/types/firestore'
+import {
+  PageBackLink,
+  PageEmptyState,
+  PageHero,
+  PageMetric,
+  PageSection,
+  PageSectionTitle,
+  UserPageShell,
+} from '@/components/layout/UserPageShell'
 
 type ProgramWithId = RadioProgram & { id: string }
 type RequestWithId = RadioRequest & { id: string }
@@ -29,15 +26,13 @@ export default function RadioPage() {
   const [programs, setPrograms] = useState<ProgramWithId[]>([])
   const [myRequests, setMyRequests] = useState<RequestWithId[]>([])
   const [loading, setLoading] = useState(true)
-
-  // Request form
+  const { toast, showToast, hideToast } = useToast()
   const [showRequestForm, setShowRequestForm] = useState(false)
   const [songTitle, setSongTitle] = useState('')
   const [artist, setArtist] = useState('')
   const [message, setMessage] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  // Fetch radio config (realtime)
   useEffect(() => {
     const unsubscribe = onSnapshot(
       doc(db, 'config', 'radio'),
@@ -63,20 +58,12 @@ export default function RadioPage() {
     return () => unsubscribe()
   }, [])
 
-  // Fetch programs
   useEffect(() => {
     const fetchPrograms = async () => {
       try {
-        const programsQuery = query(
-          collection(db, 'radioPrograms'),
-          orderBy('scheduledStart', 'asc')
-        )
+        const programsQuery = query(collection(db, 'radioPrograms'), orderBy('scheduledStart', 'asc'))
         const snapshot = await getDocs(programsQuery)
-        const programList: ProgramWithId[] = []
-        snapshot.forEach((doc) => {
-          programList.push({ id: doc.id, ...doc.data() } as ProgramWithId)
-        })
-        setPrograms(programList)
+        setPrograms(snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as ProgramWithId)))
       } catch (error) {
         console.error('Error fetching programs:', error)
       }
@@ -85,7 +72,6 @@ export default function RadioPage() {
     fetchPrograms()
   }, [])
 
-  // Fetch my requests
   useEffect(() => {
     if (!currentUser) return
 
@@ -98,11 +84,7 @@ export default function RadioPage() {
           limit(5)
         )
         const snapshot = await getDocs(requestsQuery)
-        const requestList: RequestWithId[] = []
-        snapshot.forEach((doc) => {
-          requestList.push({ id: doc.id, ...doc.data() } as RequestWithId)
-        })
-        setMyRequests(requestList)
+        setMyRequests(snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as RequestWithId)))
       } catch (error) {
         console.error('Error fetching requests:', error)
       }
@@ -111,7 +93,6 @@ export default function RadioPage() {
     fetchMyRequests()
   }, [currentUser])
 
-  // Submit request
   const handleSubmitRequest = async () => {
     if (!currentUser || !userData || !songTitle) return
 
@@ -128,7 +109,6 @@ export default function RadioPage() {
         createdAt: Timestamp.now(),
       })
 
-      // Update local state
       setMyRequests((prev) => [
         {
           id: requestId,
@@ -147,231 +127,153 @@ export default function RadioPage() {
       setArtist('')
       setMessage('')
       setShowRequestForm(false)
-      alert('リクエストを送信しました！')
+      showToast('リクエストを送信しました', 'success')
     } catch (error) {
       console.error('Error submitting request:', error)
-      alert('送信に失敗しました')
+      showToast('送信に失敗しました', 'error')
     } finally {
       setSubmitting(false)
     }
   }
 
-  // Format time
-  const formatTime = (timestamp: Timestamp) => {
-    const date = timestamp.toDate()
-    return date.toLocaleTimeString('ja-JP', {
-      hour: '2-digit',
-      minute: '2-digit',
-    })
-  }
-
-  // Check if program is current
+  const formatTime = (timestamp: Timestamp) => timestamp.toDate().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
   const isProgramNow = (program: ProgramWithId) => {
     const now = new Date()
-    const start = program.scheduledStart.toDate()
-    const end = program.scheduledEnd.toDate()
-    return now >= start && now <= end
+    return now >= program.scheduledStart.toDate() && now <= program.scheduledEnd.toDate()
   }
 
-  if (loading) {
+  if (loading || !userData) {
     return (
-      <div className="min-h-screen bg-hatofes-bg flex items-center justify-center">
+      <div className="flex min-h-screen items-center justify-center bg-[#11161a]">
         <Spinner size="lg" />
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-hatofes-bg pb-20">
-      <AppHeader
-        username={userData?.username || ''}
-        grade={userData?.grade}
-        classNumber={userData?.class}
+    <UserPageShell username={userData.username} grade={userData.grade} classNumber={userData.class}>
+      {toast ? <Toast message={toast.message} type={toast.type} onClose={hideToast} /> : null}
+
+      <PageHero
+        eyebrow="Streaming"
+        title="Hato Radio"
+        description="ライブ配信、番組表、楽曲リクエストをひとつの画面で確認できます。"
+        aside={<PageBackLink />}
+        badge={config?.isLive ? <span className="rounded-full bg-[#e24d4d] px-3 py-1 text-xs font-semibold text-white">ON AIR</span> : undefined}
       />
 
-      <main className="max-w-lg mx-auto px-4 py-6">
-        {/* Header */}
-        <div className="flex items-center gap-3 mb-6">
-          <Link to="/home" className="p-2 -ml-2 text-hatofes-gray hover:text-hatofes-white">
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-            </svg>
-          </Link>
-          <div>
-            <h1 className="text-xl font-bold text-hatofes-white font-display flex items-center gap-2">
-              <RadioIcon size={24} gradient={false} color="#EF4444" /> 鳩ラジ
-            </h1>
-            <p className="text-xs text-hatofes-gray">Hato Radio</p>
-          </div>
-        </div>
-
-        {/* Radio Player */}
-        {config && <RadioPlayer config={config} />}
-
-        {/* Request Section */}
-        {config?.requestsEnabled && (
-          <section className="mt-6">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold text-hatofes-white flex items-center gap-2">
-                <svg className="w-5 h-5 text-hatofes-accent-yellow" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
-                リクエスト
-              </h2>
-              <button
-                onClick={() => setShowRequestForm(!showRequestForm)}
-                className="btn-main text-sm px-4 py-2"
-              >
-                {showRequestForm ? '閉じる' : 'リクエストする'}
-              </button>
+      <div className="grid gap-4 xl:grid-cols-[0.78fr_1.22fr]">
+        <div className="space-y-4">
+          <PageSection>
+            <PageSectionTitle eyebrow="Status" title="配信状態" />
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+              <PageMetric label="Live" value={config?.isLive ? 'ON' : 'OFF'} tone={config?.isLive ? 'accent' : 'soft'} />
+              <PageMetric label="Requests" value={config?.requestsEnabled ? 'OPEN' : 'CLOSED'} />
             </div>
+          </PageSection>
 
-            {showRequestForm && (
-              <div className="card mb-4">
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm text-hatofes-gray mb-2">曲名 *</label>
+          <PageSection>
+            <PageSectionTitle eyebrow="Requests" title="リクエスト" />
+            {config?.requestsEnabled ? (
+              <>
+                <button
+                  onClick={() => setShowRequestForm((prev) => !prev)}
+                  className="inline-flex h-11 items-center justify-center rounded-[1rem] bg-white px-4 text-sm font-medium text-[#11161a]"
+                >
+                  {showRequestForm ? 'フォームを閉じる' : 'リクエストする'}
+                </button>
+
+                {showRequestForm ? (
+                  <div className="mt-4 space-y-3 rounded-[1rem] bg-[#0f1418] p-4">
                     <input
                       type="text"
                       value={songTitle}
-                      onChange={(e) => setSongTitle(e.target.value)}
-                      className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-4 py-2 text-hatofes-white"
-                      placeholder="曲名を入力"
+                      onChange={(event) => setSongTitle(event.target.value)}
+                      className="h-11 w-full rounded-[0.9rem] border border-white/8 bg-white/[0.04] px-3 text-sm text-white outline-none placeholder:text-white/28"
+                      placeholder="曲名 *"
                     />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-hatofes-gray mb-2">アーティスト</label>
                     <input
                       type="text"
                       value={artist}
-                      onChange={(e) => setArtist(e.target.value)}
-                      className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-4 py-2 text-hatofes-white"
+                      onChange={(event) => setArtist(event.target.value)}
+                      className="h-11 w-full rounded-[0.9rem] border border-white/8 bg-white/[0.04] px-3 text-sm text-white outline-none placeholder:text-white/28"
                       placeholder="アーティスト名"
                     />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-hatofes-gray mb-2">メッセージ</label>
                     <textarea
                       value={message}
-                      onChange={(e) => setMessage(e.target.value)}
-                      rows={2}
-                      className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-4 py-2 text-hatofes-white"
-                      placeholder="パーソナリティへのメッセージ（任意）"
+                      onChange={(event) => setMessage(event.target.value)}
+                      rows={3}
+                      className="w-full rounded-[0.9rem] border border-white/8 bg-white/[0.04] px-3 py-3 text-sm text-white outline-none placeholder:text-white/28"
+                      placeholder="メッセージ（任意）"
                     />
-                  </div>
-                  <button
-                    onClick={handleSubmitRequest}
-                    disabled={submitting || !songTitle}
-                    className="btn-main w-full py-3 disabled:opacity-50"
-                  >
-                    {submitting ? '送信中...' : 'リクエストを送信'}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* My Requests */}
-            {myRequests.length > 0 && (
-              <div className="card">
-                <h3 className="text-sm font-bold text-hatofes-gray mb-3">あなたのリクエスト</h3>
-                <div className="space-y-2">
-                  {myRequests.map((req) => (
-                    <div
-                      key={req.id}
-                      className="flex items-center justify-between bg-hatofes-dark p-3 rounded-lg"
+                    <button
+                      onClick={handleSubmitRequest}
+                      disabled={submitting || !songTitle}
+                      className="inline-flex h-11 items-center justify-center rounded-[0.9rem] bg-[#d9e4dc] px-4 text-sm font-medium text-[#11161a] disabled:opacity-45"
                     >
-                      <div className="min-w-0 flex-1">
-                        <p className="text-hatofes-white text-sm truncate">{req.songTitle}</p>
-                        {req.artist && (
-                          <p className="text-xs text-hatofes-gray truncate">{req.artist}</p>
-                        )}
-                      </div>
-                      <span
-                        className={`text-xs px-2 py-1 rounded-full ${
-                          req.status === 'played'
-                            ? 'bg-green-500/20 text-green-400'
-                            : req.status === 'approved'
-                            ? 'bg-blue-500/20 text-blue-400'
-                            : req.status === 'rejected'
-                            ? 'bg-red-500/20 text-red-400'
-                            : 'bg-yellow-500/20 text-yellow-400'
-                        }`}
-                      >
-                        {req.status === 'played'
-                          ? '再生済み'
-                          : req.status === 'approved'
-                          ? '承認済み'
-                          : req.status === 'rejected'
-                          ? '却下'
-                          : '申請中'}
-                      </span>
+                      {submitting ? '送信中...' : '送信'}
+                    </button>
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <PageEmptyState title="現在リクエストは受け付けていません" />
+            )}
+          </PageSection>
+
+          {myRequests.length > 0 ? (
+            <PageSection>
+              <PageSectionTitle eyebrow="My Requests" title="あなたのリクエスト" />
+              <div className="space-y-2">
+                {myRequests.map((req) => (
+                  <div key={req.id} className="flex items-center justify-between rounded-[1rem] bg-[#0f1418] p-4">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-white">{req.songTitle}</p>
+                      {req.artist ? <p className="mt-1 text-xs text-white/42">{req.artist}</p> : null}
                     </div>
-                  ))}
-                </div>
+                    <span className="rounded-full bg-white/[0.08] px-3 py-1 text-xs text-white/72">
+                      {req.status === 'played' ? '再生済み' : req.status === 'approved' ? '承認済み' : req.status === 'rejected' ? '却下' : '申請中'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </PageSection>
+          ) : null}
+        </div>
+
+        <div className="space-y-4">
+          {config ? <RadioPlayer config={config} /> : null}
+          {config ? <LiveReactions configDocPath="config/radio" isLive={config.isLive} /> : null}
+
+          <PageSection>
+            <PageSectionTitle eyebrow="Schedule" title="番組表" />
+            {programs.length === 0 ? (
+              <PageEmptyState title="番組が登録されていません" />
+            ) : (
+              <div className="space-y-2">
+                {programs.map((program) => {
+                  const isNow = isProgramNow(program)
+                  return (
+                    <div key={program.id} className={`rounded-[1rem] p-4 ${isNow ? 'bg-[#d9e4dc] text-[#11161a]' : 'bg-[#0f1418] text-white'}`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold">{program.title}</p>
+                          {program.hosts?.length ? <p className={`mt-1 text-xs ${isNow ? 'text-[#11161a]/58' : 'text-white/42'}`}>パーソナリティ: {program.hosts.join(', ')}</p> : null}
+                        </div>
+                        {isNow ? <span className="rounded-full bg-[#11161a] px-2.5 py-1 text-[11px] font-semibold text-white">ON AIR</span> : null}
+                      </div>
+                      <p className={`mt-3 text-xs ${isNow ? 'text-[#11161a]/58' : 'text-white/42'}`}>
+                        {formatTime(program.scheduledStart)} - {formatTime(program.scheduledEnd)}
+                      </p>
+                      {program.description ? <p className={`mt-2 text-sm ${isNow ? 'text-[#11161a]/72' : 'text-white/62'}`}>{program.description}</p> : null}
+                    </div>
+                  )
+                })}
               </div>
             )}
-          </section>
-        )}
-
-        {/* Program Schedule */}
-        <section className="mt-6">
-          <h2 className="text-lg font-bold text-hatofes-white mb-4 flex items-center gap-2">
-            <svg className="w-5 h-5 text-hatofes-accent-yellow" viewBox="0 0 24 24" fill="currentColor"><path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V9h14v11zM9 11H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2zm-8 4H7v2h2v-2zm4 0h-2v2h2v-2zm4 0h-2v2h2v-2z"/></svg>
-            番組表
-          </h2>
-
-          {programs.length === 0 ? (
-            <div className="card text-center py-8">
-              <p className="text-hatofes-gray">番組が登録されていません</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {programs.map((program) => {
-                const isNow = isProgramNow(program)
-
-                return (
-                  <div
-                    key={program.id}
-                    className={`card ${isNow ? 'ring-2 ring-red-500' : ''}`}
-                  >
-                    {isNow && (
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="relative flex h-2 w-2">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
-                          <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
-                        </span>
-                        <span className="text-xs text-red-400 font-bold">ON AIR</span>
-                      </div>
-                    )}
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <h3 className="font-bold text-hatofes-white">{program.title}</h3>
-                        {program.hosts && program.hosts.length > 0 && (
-                          <p className="text-sm text-hatofes-gray">
-                            パーソナリティ: {program.hosts.join(', ')}
-                          </p>
-                        )}
-                        {program.description && (
-                          <p className="text-xs text-hatofes-gray mt-1">{program.description}</p>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 mt-2 text-sm text-hatofes-gray">
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
-                        />
-                      </svg>
-                      {formatTime(program.scheduledStart)} - {formatTime(program.scheduledEnd)}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </section>
-      </main>
-    </div>
+          </PageSection>
+        </div>
+      </div>
+    </UserPageShell>
   )
 }

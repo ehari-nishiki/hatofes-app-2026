@@ -5,6 +5,7 @@ import { db } from '@/lib/firebase'
 import { useAuth } from '@/contexts/AuthContext'
 import { grantPoints, deductPoints, clearPoints, getPointHistory, bulkGrantPoints, bulkDeductPoints } from '@/lib/pointService'
 import { exportTransactionsToCSV, exportUsersToCSV } from '@/lib/csvUtils'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import type { PointHistory } from '@/types/firestore'
 
 const USERS_PER_PAGE = 100
@@ -81,6 +82,14 @@ export default function AdminPointsPage() {
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([])
   const [bulkAction, setBulkAction] = useState<'grant' | 'deduct'>('grant')
   const [bulkResult, setBulkResult] = useState<{ successCount: number; totalCount: number; errors?: string[] } | null>(null)
+
+  // Confirm dialog
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string
+    message: string
+    variant: 'default' | 'danger'
+    onConfirm: () => void
+  } | null>(null)
 
   const fetchUsers = useCallback(async (direction: 'first' | 'next' | 'prev' = 'first') => {
     setLoading(true)
@@ -247,47 +256,61 @@ export default function AdminPointsPage() {
     }
   }
 
-  const handleClearPoints = async () => {
+  const handleClearPoints = () => {
     if (!selectedUser || !currentUser) return
-    if (!confirm(`${selectedUser.username} のポイント（${selectedUser.totalPoints.toLocaleString()}pt）を全てクリアしますか？`)) return
-    setSubmitting(true)
-    setMessage(null)
-    try {
-      const result = await clearPoints(selectedUser.id)
-      setMessage({ type: 'success', text: `${selectedUser.username} の ${result.clearedAmount}pt をクリアしました` })
-      await refreshUser(selectedUser.id)
-    } catch (error) {
-      console.error('Error clearing points:', error)
-      setMessage({ type: 'error', text: 'ポイントクリアに失敗しました' })
-    } finally {
-      setSubmitting(false)
-    }
+    setConfirmDialog({
+      title: 'ポイントをクリア',
+      message: `${selectedUser.username} のポイント（${selectedUser.totalPoints.toLocaleString()}pt）を全てクリアしますか？この操作は取り消せません。`,
+      variant: 'danger',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        setSubmitting(true)
+        setMessage(null)
+        try {
+          const result = await clearPoints(selectedUser.id)
+          setMessage({ type: 'success', text: `${selectedUser.username} の ${result.clearedAmount}pt をクリアしました` })
+          await refreshUser(selectedUser.id)
+        } catch (error) {
+          console.error('Error clearing points:', error)
+          setMessage({ type: 'error', text: 'ポイントクリアに失敗しました' })
+        } finally {
+          setSubmitting(false)
+        }
+      },
+    })
   }
 
-  const handleBulkOperation = async () => {
+  const handleBulkOperation = () => {
     if (selectedUserIds.length === 0 || points <= 0 || !currentUser) return
-    if (!confirm(`${selectedUserIds.length}人のユーザーに${points}ptを${bulkAction === 'grant' ? '付与' : '剥奪'}しますか？`)) return
+    const actionLabel = bulkAction === 'grant' ? '付与' : '剥奪'
+    setConfirmDialog({
+      title: `一括${actionLabel}`,
+      message: `${selectedUserIds.length}人のユーザーに${points}ptを${actionLabel}しますか？`,
+      variant: bulkAction === 'deduct' ? 'danger' : 'default',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        setSubmitting(true)
+        setMessage(null)
+        setBulkResult(null)
+        try {
+          const result = bulkAction === 'grant'
+            ? await bulkGrantPoints(selectedUserIds, points, 'admin_grant', reason || '一括付与')
+            : await bulkDeductPoints(selectedUserIds, points, 'admin_deduct', reason || '一括剥奪')
 
-    setSubmitting(true)
-    setMessage(null)
-    setBulkResult(null)
-    try {
-      const result = bulkAction === 'grant'
-        ? await bulkGrantPoints(selectedUserIds, points, 'admin_grant', reason || '一括付与')
-        : await bulkDeductPoints(selectedUserIds, points, 'admin_deduct', reason || '一括剥奪')
-
-      setBulkResult(result)
-      setMessage({ type: 'success', text: result.message })
-      setPoints(10)
-      setReason('')
-      await refreshMultipleUsers(selectedUserIds)
-    } catch (error: any) {
-      console.error('Error in bulk operation:', error)
-      const errorMessage = error?.message || error?.toString() || '一括操作に失敗しました'
-      setMessage({ type: 'error', text: `エラー: ${errorMessage}` })
-    } finally {
-      setSubmitting(false)
-    }
+          setBulkResult(result)
+          setMessage({ type: 'success', text: result.message })
+          setPoints(10)
+          setReason('')
+          await refreshMultipleUsers(selectedUserIds)
+        } catch (error: unknown) {
+          console.error('Error in bulk operation:', error)
+          const errorMessage = error instanceof Error ? error.message : '一括操作に失敗しました'
+          setMessage({ type: 'error', text: `エラー: ${errorMessage}` })
+        } finally {
+          setSubmitting(false)
+        }
+      },
+    })
   }
 
   const toggleUserSelection = (userId: string) => {
@@ -358,6 +381,18 @@ export default function AdminPointsPage() {
 
   return (
     <div className="min-h-screen bg-hatofes-bg">
+      {/* Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={!!confirmDialog}
+        title={confirmDialog?.title || ''}
+        message={confirmDialog?.message || ''}
+        variant={confirmDialog?.variant || 'default'}
+        confirmLabel="実行"
+        loading={submitting}
+        onConfirm={() => confirmDialog?.onConfirm()}
+        onCancel={() => setConfirmDialog(null)}
+      />
+
       {/* Header */}
       <header className="bg-hatofes-dark border-b border-hatofes-gray-lighter px-4 py-4">
         <div className="max-w-4xl mx-auto flex items-center justify-between">
@@ -422,7 +457,7 @@ export default function AdminPointsPage() {
                   <button
                     onClick={handleClearPoints}
                     disabled={submitting || selectedUser.totalPoints === 0}
-                    className="btn-main w-full py-3 rounded-lg disabled:opacity-50 bg-red-600 hover:bg-red-700"
+                    className="btn-main w-full py-3 rounded-full disabled:opacity-50 bg-red-600 hover:bg-red-700"
                   >
                     {submitting ? '処理中...' : selectedUser.totalPoints === 0 ? 'ポイントは既に0' : `${selectedUser.totalPoints.toLocaleString()}pt を全クリアする`}
                   </button>

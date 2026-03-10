@@ -1,19 +1,30 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { collection, query, where, getCountFromServer, doc, getDoc } from 'firebase/firestore'
+import { doc, getDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
-import AppHeader from '@/components/layout/AppHeader'
 import { useAuth } from '@/contexts/AuthContext'
 import { usePointHistory } from '@/hooks/usePointHistory'
 import { useClassPoints } from '@/hooks/useClassPoints'
 import { generateClassId } from '@/lib/classUtils'
 import { AnimatedNumber } from '@/components/ui/PageLoader'
+import {
+  PageBackLink,
+  PageEmptyState,
+  PageHero,
+  PageMetric,
+  PageSection,
+  PageSectionTitle,
+  UserPageShell,
+} from '@/components/layout/UserPageShell'
+
+interface PersonalRankingCacheItem {
+  userId: string
+}
 
 export default function PointPage() {
   const { currentUser, userData } = useAuth()
-  const { history, loading: historyLoading, hasMore, loadMore, refresh } = usePointHistory(currentUser?.uid || null)
+  const { history, loading: historyLoading, hasMore, loadMore } = usePointHistory(currentUser?.uid || null)
 
-  // Get class ID and fetch class data
   const classId = userData?.grade && userData?.class
     ? generateClassId(userData.grade, userData.class)
     : null
@@ -22,200 +33,169 @@ export default function PointPage() {
   const [personalRank, setPersonalRank] = useState<number | null>(null)
   const [totalUsers, setTotalUsers] = useState<number | null>(null)
 
-  // Fetch rank using cache (optimized)
   useEffect(() => {
     if (!currentUser || !userData) return
+
     const fetchRank = async () => {
       try {
-        // Try to get ranking from cache first
         const rankingCacheDoc = await getDoc(doc(db, 'config', 'personalRanking'))
 
-        if (rankingCacheDoc.exists()) {
-          const cachedRankings = rankingCacheDoc.data().rankings || []
-          const rank = cachedRankings.findIndex((r: any) => r.userId === currentUser.uid) + 1
-          if (rank > 0) {
-            setPersonalRank(rank)
-            setTotalUsers(cachedRankings.length)
-            return
-          }
-        }
+        if (!rankingCacheDoc.exists()) return
 
-        // Fallback: calculate rank directly if cache miss
-        const higherSnap = await getCountFromServer(
-          query(collection(db, 'users'), where('totalPoints', '>', userData.totalPoints))
-        )
-        setPersonalRank(higherSnap.data().count + 1)
-        const totalSnap = await getCountFromServer(query(collection(db, 'users')))
-        setTotalUsers(totalSnap.data().count)
+        const cachedRankings = (rankingCacheDoc.data().rankings || []) as PersonalRankingCacheItem[]
+        const rank = cachedRankings.findIndex((item) => item.userId === currentUser.uid) + 1
+
+        setTotalUsers(cachedRankings.length)
+        setPersonalRank(rank > 0 ? rank : null)
       } catch (error) {
         console.error('Error fetching rank:', error)
       }
     }
+
     fetchRank()
   }, [currentUser, userData])
 
-  // Refresh point history when total points change
-  useEffect(() => {
-    if (userData?.totalPoints !== undefined) {
-      refresh()
-    }
-  }, [userData?.totalPoints, refresh])
-
   if (!userData) {
     return (
-      <div className="min-h-screen bg-hatofes-bg flex items-center justify-center">
-        <div className="text-hatofes-white">読み込み中...</div>
+      <div className="flex min-h-screen items-center justify-center bg-[#11161a]">
+        <div className="text-white">読み込み中...</div>
       </div>
     )
   }
 
+  const progressLabel = personalRank !== null && totalUsers
+    ? `${personalRank.toLocaleString()} / ${totalUsers.toLocaleString()}`
+    : '計算中'
+
   return (
-    <div className="min-h-screen bg-hatofes-bg pb-8">
-      <AppHeader
-        username={userData.username}
-        grade={userData.grade}
-        classNumber={userData.class}
+    <UserPageShell username={userData.username} grade={userData.grade} classNumber={userData.class}>
+      <PageHero
+        eyebrow="Point Center"
+        title="Points"
+        description="いまの鳩ポイント、クラス合計、順位、獲得履歴をまとめて確認できます。"
+        badge={<LiveSyncBadge />}
+        aside={<PageBackLink />}
       />
 
-      <main className="max-w-lg mx-auto px-4 py-6 space-y-6">
-        {/* Personal Points */}
-        <section className="card">
-          <p className="text-lg text-hatofes-white text-center mb-3 font-bold">現在の鳩ポイント</p>
+      <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+        <div className="space-y-4">
+          <PageSection className="overflow-hidden">
+            <PageSectionTitle
+              eyebrow="Overview"
+              title="現在のポイント"
+              meta={<span className="rounded-full bg-white/[0.06] px-3 py-1 text-xs text-white/58">個人スコア</span>}
+            />
 
-          <div
-            className="rounded-lg p-4 mb-2"
-            style={{
-              background: 'linear-gradient(135deg, rgba(255,195,0,0.15), rgba(255,78,0,0.15))',
-              border: '2px solid transparent',
-              backgroundImage: 'linear-gradient(#0d0d0d, #0d0d0d), linear-gradient(135deg, #FFC300, #FF4E00)',
-              backgroundOrigin: 'border-box',
-              backgroundClip: 'padding-box, border-box',
-            }}
-          >
-            <div className="flex items-baseline justify-center">
-              <span className="font-display text-5xl font-bold text-gradient">
-                <AnimatedNumber value={userData.totalPoints} duration={1200} />
-              </span>
-              <span className="text-xl ml-1 text-hatofes-gray-light font-display">pt</span>
-            </div>
-          </div>
+            <div className="grid gap-3 md:grid-cols-[1.2fr_0.8fr]">
+              <div className="rounded-[1.35rem] bg-[#0f1418] p-5 text-white">
+                <p className="text-[11px] uppercase tracking-[0.22em] text-white/42">Total Points</p>
+                <div className="mt-4 flex items-end gap-2">
+                  <span
+                    className="text-5xl font-semibold tracking-[-0.06em]"
+                    style={{
+                      background: 'linear-gradient(135deg, #FFC300, #FF7A18)',
+                      WebkitBackgroundClip: 'text',
+                      WebkitTextFillColor: 'transparent',
+                      backgroundClip: 'text',
+                    }}
+                  >
+                    <AnimatedNumber value={userData.totalPoints} duration={1200} />
+                  </span>
+                  <span className="pb-1 text-sm text-white/52">pt</span>
+                </div>
+                <p className="mt-4 text-sm text-white/58">毎日のログイン、通知確認、タスク参加がここに反映されます。</p>
+              </div>
 
-          <p className="text-xs text-hatofes-gray text-right flex items-center justify-end gap-1">
-            <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-            リアルタイム同期中
-          </p>
-        </section>
-
-        {/* Class Points */}
-        {userData.role === 'student' && classData && (
-          <section className="card">
-            <div className="flex justify-between items-start mb-2">
-              <p className="text-sm text-hatofes-white">{userData.grade}-{userData.class}</p>
-            </div>
-
-            <div className="border border-hatofes-gray rounded-lg p-4 mb-2 bg-hatofes-dark">
-              <div className="flex items-baseline justify-center">
-                {classLoading ? (
-                  <span className="text-hatofes-gray">読み込み中...</span>
-                ) : (
-                  <>
-                    <span className="font-display text-4xl font-bold text-hatofes-white">
-                      {classData.totalPoints.toLocaleString()}
-                    </span>
-                    <span className="text-lg ml-1 text-hatofes-gray-light font-display">pt</span>
-                  </>
-                )}
+              <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-1">
+                <PageMetric label="National Rank" value={progressLabel} tone="soft" />
+                <PageMetric
+                  label="Class Total"
+                  value={classLoading ? '...' : classData?.totalPoints?.toLocaleString() || '0'}
+                  unit="pt"
+                />
               </div>
             </div>
+          </PageSection>
 
-            <p className="text-xs text-hatofes-gray text-right">
-              クラス合計 {classData.memberCount > 0 && `/ ${classData.memberCount}人`}
-            </p>
-          </section>
-        )}
+          <PageSection>
+            <PageSectionTitle eyebrow="History" title="ポイント履歴" />
 
-        {/* Ranking */}
-        <section className="card">
-          <p className="text-sm text-hatofes-white mb-2">順位</p>
-          <div className="flex items-baseline justify-center py-4">
-            {personalRank !== null ? (
-              <>
-                <span className="font-display text-5xl font-bold text-gradient">
-                  {personalRank.toLocaleString()}
-                </span>
-                <span className="text-lg ml-2 text-hatofes-gray-light font-display">/ {(totalUsers ?? 0).toLocaleString()}人中</span>
-              </>
+            {historyLoading ? (
+              <PageEmptyState title="履歴を読み込み中です" />
+            ) : history.length === 0 ? (
+              <PageEmptyState title="まだポイント履歴がありません" description="行動をするとここに獲得履歴が追加されます。" />
             ) : (
-              <span className="text-hatofes-gray">ランキング計算中...</span>
-            )}
-          </div>
-          <Link
-            to="/ranking"
-            className="block bg-hatofes-dark rounded py-2 px-4 text-center text-sm text-hatofes-white hover:text-hatofes-accent-yellow transition-colors"
-          >
-            ランキングを見る →
-          </Link>
-        </section>
-
-        {/* Point History */}
-        <section className="card">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="font-bold text-hatofes-white">履歴</h2>
-          </div>
-
-          {historyLoading ? (
-            <p className="text-sm text-hatofes-gray text-center py-4">読み込み中...</p>
-          ) : history.length === 0 ? (
-            <p className="text-sm text-hatofes-gray text-center py-4">まだポイント履歴がありません</p>
-          ) : (
-            <>
-              <ul className="space-y-2">
+              <div className="space-y-3">
                 {history.map((item) => (
-                  <li key={item.id} className="py-3 px-3 flex items-center justify-between rounded-lg bg-hatofes-dark">
-                    <div>
-                      <p className="text-hatofes-white text-sm font-medium">{getReasonLabel(item.reason)}</p>
-                      <p className="text-hatofes-gray text-xs font-display">{formatDate(item.createdAt)}</p>
-                      {item.details && (
-                        <p className="text-hatofes-gray text-xs mt-1">{item.details}</p>
-                      )}
+                  <div
+                    key={item.id}
+                    className="flex items-start justify-between gap-3 rounded-[1.15rem] bg-[#0f1418] px-4 py-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-white">{getReasonLabel(item.reason)}</p>
+                      <p className="mt-1 text-xs text-white/42">{formatDate(item.createdAt)}</p>
+                      {item.details ? <p className="mt-2 text-sm text-white/56">{item.details}</p> : null}
                     </div>
-                    <span
-                      className="px-3 py-1 rounded-full text-sm font-bold font-display text-white"
-                      style={{
-                        background: item.points >= 0
-                          ? 'linear-gradient(90deg, #FFC300, #FF4E00)'
-                          : 'linear-gradient(90deg, #ef4444, #dc2626)',
-                      }}
-                    >
-                      {item.points >= 0 ? '+' : ''}{item.points}pt
+                    <span className={`rounded-full px-3 py-1 text-sm font-semibold ${item.points >= 0 ? 'bg-white/[0.08] text-[#ffb36d]' : 'bg-[#3a1f22] text-[#ffb8bf]'}`}>
+                      {item.points >= 0 ? '+' : ''}
+                      {item.points}pt
                     </span>
-                  </li>
+                  </div>
                 ))}
-              </ul>
+              </div>
+            )}
 
-              {hasMore && (
-                <button
-                  onClick={loadMore}
-                  className="mt-4 w-full rounded-lg py-2.5 px-4 text-center text-sm flex items-center justify-center gap-2 text-hatofes-white border border-hatofes-gray hover:border-hatofes-accent-yellow hover:text-hatofes-accent-yellow transition-colors"
-                >
-                  <span className="font-din">Show more</span>
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-              )}
-            </>
-          )}
-        </section>
+            {hasMore ? (
+              <button
+                onClick={loadMore}
+                className="mt-4 inline-flex h-11 items-center justify-center rounded-[1rem] border border-white/8 bg-white/[0.04] px-4 text-sm font-medium text-white/78 transition-colors hover:bg-white/[0.08] hover:text-white"
+              >
+                さらに表示
+              </button>
+            ) : null}
+          </PageSection>
+        </div>
 
-        {/* Back Button */}
-        <Link to="/home" className="block">
-          <div className="btn-sub w-full py-3 text-center">
-            ホームに戻る
-          </div>
-        </Link>
-      </main>
-    </div>
+        <div className="space-y-4">
+          {userData.role === 'student' && classData ? (
+            <PageSection>
+              <PageSectionTitle eyebrow="Class Board" title={`${userData.grade}年${userData.class}組`} />
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                <PageMetric
+                  label="Class Points"
+                  value={classLoading ? '...' : classData.totalPoints.toLocaleString()}
+                  unit="pt"
+                  tone="soft"
+                />
+                <PageMetric label="Members" value={classData.memberCount.toLocaleString()} unit="people" />
+              </div>
+            </PageSection>
+          ) : null}
+
+          <PageSection>
+            <PageSectionTitle eyebrow="Ranking" title="ランキングへ移動" />
+            <p className="text-sm leading-6 text-white/58">
+              個人とクラスの順位を見て、現在地を確認できます。
+            </p>
+            <Link
+              to="/ranking"
+              className="mt-4 inline-flex h-11 items-center justify-center rounded-[1rem] bg-white text-sm font-medium text-[#11161a] px-4 transition-colors hover:bg-[#d9e4dc]"
+            >
+              ランキングを見る
+            </Link>
+          </PageSection>
+        </div>
+      </div>
+    </UserPageShell>
+  )
+}
+
+function LiveSyncBadge() {
+  return (
+    <span className="inline-flex items-center gap-2 rounded-full bg-white/[0.06] px-3 py-1 text-xs text-white/64">
+      <span className="h-2 w-2 rounded-full bg-[#d9e4dc]" />
+      リアルタイム同期
+    </span>
   )
 }
 

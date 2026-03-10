@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import type { Class } from '../types/firestore';
 
@@ -10,7 +10,7 @@ interface UseClassPointsResult {
 }
 
 /**
- * Hook to fetch class points data (one-time fetch, optimized for cost reduction)
+ * Hook to fetch class points data in realtime.
  * @param classId - Class ID (e.g., "1-A", "2-B")
  * @returns Class data (fetched once on mount)
  */
@@ -26,29 +26,24 @@ export function useClassPoints(classId: string | null): UseClassPointsResult {
       return;
     }
 
-    const fetchClassData = async () => {
+    const classDocRef = doc(db, 'classes', classId);
+    const unsubscribe = onSnapshot(classDocRef, (classDocSnap) => {
       setLoading(true);
       setError(null);
-
-      try {
-        const classDocRef = doc(db, 'classes', classId);
-        const classDocSnap = await getDoc(classDocRef);
-
-        if (classDocSnap.exists()) {
-          setClassData({ id: classDocSnap.id, ...classDocSnap.data() } as Class);
-        } else {
-          setClassData(null);
-          setError('クラスデータが見つかりません');
-        }
-      } catch (err) {
-        console.error('Error fetching class data:', err);
-        setError('クラスデータの取得に失敗しました');
-      } finally {
-        setLoading(false);
+      if (classDocSnap.exists()) {
+        setClassData({ id: classDocSnap.id, ...classDocSnap.data() } as Class);
+      } else {
+        setClassData(null);
+        setError('クラスデータが見つかりません');
       }
-    };
+      setLoading(false);
+    }, (err) => {
+      console.error('Error fetching class data:', err);
+      setError('クラスデータの取得に失敗しました');
+      setLoading(false);
+    });
 
-    fetchClassData();
+    return () => unsubscribe();
   }, [classId]);
 
   return {

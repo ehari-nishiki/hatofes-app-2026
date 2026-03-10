@@ -13,6 +13,8 @@ import {
 import { db } from '@/lib/firebase'
 import { useAuth } from '@/contexts/AuthContext'
 import { Spinner } from '@/components/ui/Spinner'
+import { Toast, useToast } from '@/components/ui/Toast'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import type { Booth, BoothCategory } from '@/types/firestore'
 
 type BoothWithId = Booth & { id: string }
@@ -32,6 +34,10 @@ export default function AdminBoothsPage() {
   const [saving, setSaving] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [showForm, setShowForm] = useState(false)
+  const { toast, showToast, hideToast } = useToast()
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string; message: string; onConfirm: () => void
+  } | null>(null)
 
   // Form state
   const [formData, setFormData] = useState({
@@ -128,26 +134,31 @@ export default function AdminBoothsPage() {
       }
 
       resetForm()
-      alert(editingId ? 'ブースを更新しました' : 'ブースを追加しました')
+      showToast(editingId ? 'ブースを更新しました' : 'ブースを追加しました', 'success')
     } catch (error) {
       console.error('Error saving booth:', error)
-      alert('保存に失敗しました')
+      showToast('保存に失敗しました', 'error')
     } finally {
       setSaving(false)
     }
   }
 
-  const handleDelete = async (boothId: string) => {
-    if (!confirm('このブースを削除しますか？')) return
-
-    try {
-      await deleteDoc(doc(db, 'booths', boothId))
-      setBooths((prev) => prev.filter((b) => b.id !== boothId))
-      alert('ブースを削除しました')
-    } catch (error) {
-      console.error('Error deleting booth:', error)
-      alert('削除に失敗しました')
-    }
+  const handleDelete = (boothId: string) => {
+    setConfirmDialog({
+      title: 'ブース削除',
+      message: 'このブースを削除しますか？',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        try {
+          await deleteDoc(doc(db, 'booths', boothId))
+          setBooths((prev) => prev.filter((b) => b.id !== boothId))
+          showToast('ブースを削除しました', 'success')
+        } catch (error) {
+          console.error('Error deleting booth:', error)
+          showToast('削除に失敗しました', 'error')
+        }
+      },
+    })
   }
 
   if (loading) {
@@ -160,6 +171,16 @@ export default function AdminBoothsPage() {
 
   return (
     <div className="min-h-screen bg-hatofes-bg">
+      {toast && <Toast message={toast.message} type={toast.type} onClose={hideToast} />}
+      <ConfirmDialog
+        isOpen={!!confirmDialog}
+        title={confirmDialog?.title || ''}
+        message={confirmDialog?.message || ''}
+        variant="danger"
+        confirmLabel="削除"
+        onConfirm={() => confirmDialog?.onConfirm()}
+        onCancel={() => setConfirmDialog(null)}
+      />
       {/* Header */}
       <header className="bg-hatofes-dark border-b border-hatofes-gray-lighter px-4 py-4">
         <div className="max-w-4xl mx-auto flex items-center justify-between">

@@ -1,10 +1,22 @@
 import * as functions from 'firebase-functions/v2';
 import * as admin from 'firebase-admin';
 import { google } from 'googleapis';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { defineSecret } from 'firebase-functions/params';
 
 admin.initializeApp();
 
 const db = admin.firestore();
+
+const DEFAULT_STREAK_MILESTONES: Record<number, number> = { 3: 20, 7: 50, 14: 100, 30: 300 };
+const DEFAULT_TETRIS_REWARDS = {
+  firstTierLimit: 10,
+  firstTierMultiplier: 10,
+  secondTierLimit: 100,
+  secondTierMultiplier: 1,
+};
+const MAX_UPLOAD_SIZE_BYTES = 1024 * 1024;
 
 // 監査ログを記録する関数（セキュリティ上重要なアクションを追跡）
 async function logAdminAction(
@@ -25,9 +37,20 @@ async function logAdminAction(
   }
 }
 
-function isValidDomain(email: string): boolean {
-  if (process.env.RESTRICT_DOMAIN !== 'true') return true;
+async function isValidDomain(email: string): Promise<boolean> {
+  if (!email) return false;
+
+  const configDoc = await db.collection('config').doc('domainRestriction').get();
+  const restrictionEnabled = configDoc.exists && configDoc.data()?.enabled === true;
+
+  if (!restrictionEnabled) return true;
   return email.endsWith('@g.nagano-c.ed.jp');
+}
+
+async function assertValidDomain(email: string): Promise<void> {
+  if (!(await isValidDomain(email))) {
+    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
+  }
 }
 
 // クラスポイント更新のためのDocumentReference を返す（grade/class が未定義なら null）
@@ -56,6 +79,54 @@ function writeClassPoints(
       memberCount: 1,
     });
   }
+}
+
+async function awardBadgesIfNeeded(userId: string, badgeIds: string[]): Promise<string[]> {
+  const uniqueBadgeIds = [...new Set(badgeIds.filter(Boolean))];
+  if (uniqueBadgeIds.length === 0) return [];
+
+  const userDocRef = db.collection('users').doc(userId);
+  const userDoc = await userDocRef.get();
+  if (!userDoc.exists) return [];
+
+  const currentBadges = (userDoc.data()?.badges || []) as string[];
+  const newBadges = uniqueBadgeIds.filter((badgeId) => !currentBadges.includes(badgeId));
+
+  if (newBadges.length > 0) {
+    await userDocRef.update({
+      badges: admin.firestore.FieldValue.arrayUnion(...newBadges),
+    });
+  }
+
+  return newBadges;
+}
+
+async function checkAndAwardCompletionBadge(userId: string, category: 'task' | 'mission'): Promise<string[]> {
+  const badgeId = category === 'task' ? 'all_tasks_done' : 'all_missions_done';
+
+  const activeSurveysSnap = await db.collection('surveys')
+    .where('category', '==', category)
+    .where('status', '==', 'active')
+    .get();
+
+  if (activeSurveysSnap.empty) return [];
+
+  const activeSurveyIds = new Set(activeSurveysSnap.docs.map((docSnap) => docSnap.id));
+  const responsesSnap = await db.collection('surveyResponses')
+    .where('userId', '==', userId)
+    .get();
+
+  const answeredIds = new Set(
+    responsesSnap.docs
+      .map((docSnap) => docSnap.data().surveyId as string)
+      .filter((surveyId) => activeSurveyIds.has(surveyId))
+  );
+
+  if (answeredIds.size === activeSurveyIds.size) {
+    return awardBadgesIfNeeded(userId, [badgeId]);
+  }
+
+  return [];
 }
 
 async function appendToGoogleSheet(
@@ -132,10 +203,7 @@ export const awardLoginBonus = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const uid = request.auth.uid;
   const userDocRef = db.collection('users').doc(uid);
@@ -156,38 +224,70 @@ export const awardLoginBonus = functions.https.onCall(async (request) => {
     return { success: false, message: '今日のログインボーナスは既に受け取っています' };
   }
 
-  // ログインボーナス設定を取得（デフォルト: 10pt + 1チケット）
+  // ストリーク計算: 昨日ログインしていたら継続、それ以外はリセット
+  const yesterday = new Date(jst.getTime() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const previousStreak = userData.loginStreak || 0;
+  const lastStreakDate = userData.lastStreakDate || '';
+  let newStreak: number;
+  if (lastStreakDate === yesterday) {
+    newStreak = previousStreak + 1;
+  } else if (lastStreakDate === today) {
+    newStreak = previousStreak; // Same day, no change
+  } else {
+    newStreak = 1; // Reset
+  }
+
   const configDoc = await db.collection('config').doc('loginBonus').get();
-  const bonusPoints = configDoc.exists ? (configDoc.data()!.points || 10) : 10;
-  const bonusTickets = configDoc.exists ? (configDoc.data()!.tickets || 1) : 1;
+  const loginBonusConfig = configDoc.exists ? configDoc.data()! : {};
+  const streakMilestones = (loginBonusConfig.streakMilestones || DEFAULT_STREAK_MILESTONES) as Record<number, number>;
+
+  // ストリークマイルストーンボーナス
+  const streakBonus = streakMilestones[newStreak] || 0;
+
+  // ストリークバッジ付与
+  const streakBadgeMap: Record<number, string> = { 3: 'streak_3', 7: 'streak_7', 14: 'streak_14', 30: 'streak_30' };
+  const newBadgeId = streakBadgeMap[newStreak] || null;
+  const userBadges: string[] = userData.badges || [];
+  const shouldAwardBadge = newBadgeId && !userBadges.includes(newBadgeId);
+
+  // ログインボーナス設定を取得（デフォルト: 10pt + 1チケット）
+  const bonusPoints = loginBonusConfig.points || 10;
+  const bonusTickets = loginBonusConfig.tickets || 1;
+  const totalPoints = bonusPoints + streakBonus;
 
   const classRef = getClassRef(userData);
 
   await db.runTransaction(async (transaction) => {
     // --- reads first ---
-    const classDoc = classRef && bonusPoints > 0 ? await transaction.get(classRef) : null;
+    const classDoc = classRef && totalPoints > 0 ? await transaction.get(classRef) : null;
 
     // --- writes ---
-    if (bonusPoints > 0) {
+    if (totalPoints > 0) {
       const historyRef = db.collection('pointHistory').doc();
       transaction.set(historyRef, {
         userId: uid,
-        points: bonusPoints,
+        points: totalPoints,
         reason: 'login_bonus',
-        details: `ログインボーナス（${today}）`,
+        details: streakBonus > 0
+          ? `ログインボーナス（${today}）+ ストリーク${newStreak}日ボーナス ${streakBonus}pt`
+          : `ログインボーナス（${today}）`,
         grantedBy: 'system',
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     }
 
-    transaction.update(userDocRef, {
-      totalPoints: admin.firestore.FieldValue.increment(bonusPoints),
+    const userUpdate: Record<string, unknown> = {
+      totalPoints: admin.firestore.FieldValue.increment(totalPoints),
       lastLoginDate: today,
+      loginStreak: newStreak,
+      lastStreakDate: today,
       gachaTickets: admin.firestore.FieldValue.increment(bonusTickets),
-    });
+    };
 
-    if (classRef && classDoc && bonusPoints > 0) {
-      writeClassPoints(transaction, classRef, classDoc, userData as { grade: number; class: string }, bonusPoints);
+    transaction.update(userDocRef, userUpdate);
+
+    if (classRef && classDoc && totalPoints > 0) {
+      writeClassPoints(transaction, classRef, classDoc, userData as { grade: number; class: string }, totalPoints);
     }
 
     if (bonusTickets > 0) {
@@ -202,7 +302,36 @@ export const awardLoginBonus = functions.https.onCall(async (request) => {
     }
   });
 
-  return { success: true, message: 'ログインボーナスを付与しました', points: bonusPoints, tickets: bonusTickets };
+  const extraBadges: string[] = [];
+  if (shouldAwardBadge && newBadgeId) {
+    extraBadges.push(newBadgeId);
+  }
+
+  const festivalDoc = await db.collection('config').doc('festivalDate').get();
+  if (festivalDoc.exists) {
+    const startDate = festivalDoc.data()?.startDate?.toDate?.() as Date | undefined;
+    if (startDate) {
+      const festivalStartJst = new Date(startDate.getTime() + 9 * 60 * 60 * 1000).toISOString().split('T')[0];
+      if (festivalStartJst === today) {
+        const earlyLoginsSnap = await db.collection('users').where('lastLoginDate', '==', today).count().get();
+        if (earlyLoginsSnap.data().count <= 100) {
+          extraBadges.push('early_bird');
+        }
+      }
+    }
+  }
+
+  const awardedBadges = await awardBadgesIfNeeded(uid, extraBadges);
+
+  return {
+    success: true,
+    message: 'ログインボーナスを付与しました',
+    points: totalPoints,
+    tickets: bonusTickets,
+    streak: newStreak,
+    streakBonus,
+    newBadge: awardedBadges[0] || null,
+  };
 });
 
 // ログインボーナス設定更新（admin用）
@@ -211,30 +340,90 @@ export const updateLoginBonusConfig = functions.https.onCall(async (request) => 
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const adminDoc = await db.collection('users').doc(request.auth.uid).get();
   if (!adminDoc.exists || adminDoc.data()!.role !== 'admin') {
     throw new functions.https.HttpsError('permission-denied', '管理者のみ使用可能です');
   }
 
-  const { points, tickets } = request.data as { points: number; tickets: number };
+  const { points, tickets, streakMilestones } = request.data as {
+    points: number;
+    tickets: number;
+    streakMilestones?: Record<number, number>;
+  };
 
   if (typeof points !== 'number' || points < 0 || typeof tickets !== 'number' || tickets < 0) {
     throw new functions.https.HttpsError('invalid-argument', 'パラメータが不正です');
   }
 
+  const normalizedMilestones = Object.entries(streakMilestones || DEFAULT_STREAK_MILESTONES).reduce<Record<number, number>>((acc, [key, value]) => {
+    const day = Number(key);
+    const bonus = Number(value);
+    if (Number.isFinite(day) && day > 0 && Number.isFinite(bonus) && bonus >= 0) {
+      acc[day] = bonus;
+    }
+    return acc;
+  }, {});
+
   await db.collection('config').doc('loginBonus').set({
     points,
     tickets,
+    streakMilestones: Object.keys(normalizedMilestones).length > 0 ? normalizedMilestones : DEFAULT_STREAK_MILESTONES,
     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     updatedBy: request.auth.uid,
   });
 
   return { success: true, message: 'ログインボーナス設定を更新しました' };
+});
+
+export const updateTetrisRewardConfig = functions.https.onCall(async (request) => {
+  if (!request.auth) {
+    throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+  }
+
+  await assertValidDomain(request.auth.token?.email || '');
+
+  const adminDoc = await db.collection('users').doc(request.auth.uid).get();
+  if (!adminDoc.exists || adminDoc.data()!.role !== 'admin') {
+    throw new functions.https.HttpsError('permission-denied', '管理者のみ使用可能です');
+  }
+
+  const {
+    firstTierLimit,
+    firstTierMultiplier,
+    secondTierLimit,
+    secondTierMultiplier,
+  } = request.data as {
+    firstTierLimit: number;
+    firstTierMultiplier: number;
+    secondTierLimit: number;
+    secondTierMultiplier: number;
+  };
+
+  if (
+    !Number.isFinite(firstTierLimit) ||
+    !Number.isFinite(firstTierMultiplier) ||
+    !Number.isFinite(secondTierLimit) ||
+    !Number.isFinite(secondTierMultiplier) ||
+    firstTierLimit < 0 ||
+    secondTierLimit < firstTierLimit ||
+    firstTierMultiplier < 0 ||
+    secondTierMultiplier < 0
+  ) {
+    throw new functions.https.HttpsError('invalid-argument', 'テトリス報酬設定が不正です');
+  }
+
+  await db.collection('config').doc('tetrisRewards').set({
+    firstTierLimit,
+    firstTierMultiplier,
+    secondTierLimit,
+    secondTierMultiplier,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedBy: request.auth.uid,
+  });
+
+  return { success: true, message: 'テトリス報酬設定を更新しました' };
 });
 
 // 管理者によるポイント付与
@@ -243,10 +432,7 @@ export const grantPoints = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const adminDoc = await db.collection('users').doc(request.auth.uid).get();
   if (!adminDoc.exists || !['admin', 'staff'].includes(adminDoc.data()!.role)) {
@@ -316,10 +502,7 @@ export const bulkGrantPoints = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const adminDoc = await db.collection('users').doc(request.auth.uid).get();
   if (!adminDoc.exists || !['admin', 'staff'].includes(adminDoc.data()!.role)) {
@@ -401,10 +584,7 @@ export const bulkDeductPoints = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const adminDoc = await db.collection('users').doc(request.auth.uid).get();
   if (!adminDoc.exists || !['admin', 'staff'].includes(adminDoc.data()!.role)) {
@@ -497,10 +677,7 @@ export const submitSurveyResponse = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const uid = request.auth.uid;
   const { surveyId, answers } = request.data as { surveyId: string; answers: unknown[] };
@@ -587,6 +764,10 @@ export const submitSurveyResponse = functions.https.onCall(async (request) => {
     console.error('Sheets sync failed (non-critical):', err);
   });
 
+  if (surveyData.category === 'task' || surveyData.category === 'mission') {
+    await checkAndAwardCompletionBadge(uid, surveyData.category);
+  }
+
   return { success: true, pointsAwarded, message: 'アンケートに回答しました' };
 });
 
@@ -599,10 +780,7 @@ export const updateUserRole = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const adminDoc = await db.collection('users').doc(request.auth.uid).get();
   if (!adminDoc.exists || adminDoc.data()!.role !== 'admin') {
@@ -663,10 +841,7 @@ export const changeUsername = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const uid = request.auth.uid;
   const { word1, word2, word3 } = request.data as { word1: string; word2: string; word3: string };
@@ -732,10 +907,7 @@ export const grantGachaTickets = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const adminDoc = await db.collection('users').doc(request.auth.uid).get();
   if (!adminDoc.exists || !['admin', 'staff'].includes(adminDoc.data()!.role)) {
@@ -814,10 +986,7 @@ export const deductGachaTickets = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const adminDoc = await db.collection('users').doc(request.auth.uid).get();
   if (!adminDoc.exists || !['admin', 'staff'].includes(adminDoc.data()!.role)) {
@@ -874,10 +1043,7 @@ export const clearGachaTickets = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const adminDoc = await db.collection('users').doc(request.auth.uid).get();
   if (!adminDoc.exists || adminDoc.data()!.role !== 'admin') {
@@ -929,10 +1095,7 @@ export const bulkGrantGachaTickets = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const adminDoc = await db.collection('users').doc(request.auth.uid).get();
   if (!adminDoc.exists || !['admin', 'staff'].includes(adminDoc.data()!.role)) {
@@ -1003,10 +1166,7 @@ export const bulkDeductGachaTickets = functions.https.onCall(async (request) => 
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const adminDoc = await db.collection('users').doc(request.auth.uid).get();
   if (!adminDoc.exists || !['admin', 'staff'].includes(adminDoc.data()!.role)) {
@@ -1089,10 +1249,7 @@ export const deductPoints = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const adminDoc = await db.collection('users').doc(request.auth.uid).get();
   if (!adminDoc.exists || !['admin', 'staff'].includes(adminDoc.data()!.role)) {
@@ -1158,10 +1315,7 @@ export const clearPoints = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const adminDoc = await db.collection('users').doc(request.auth.uid).get();
   if (!adminDoc.exists || adminDoc.data()!.role !== 'admin') {
@@ -1221,10 +1375,7 @@ export const getTodayTetrisStats = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const uid = request.auth.uid;
   const userDoc = await db.collection('users').doc(uid).get();
@@ -1264,10 +1415,7 @@ export const registerTetrisRanking = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const uid = request.auth.uid;
   const { score, linesCleared } = request.data as { score: number; linesCleared: number };
@@ -1296,6 +1444,7 @@ export const registerTetrisRanking = functions.https.onCall(async (request) => {
     transaction.set(tetrisScoreRef, {
       userId: uid,
       username: userData.username,
+      profileImageUrl: userData.profileImageUrl || null,
       grade: userData.grade,
       class: userData.class,
       highScore: Math.max(currentHighScore, score),
@@ -1367,10 +1516,7 @@ export const submitTetrisScore = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const uid = request.auth.uid;
   const userDocRef = db.collection('users').doc(uid);
@@ -1413,33 +1559,34 @@ export const submitTetrisScore = functions.https.onCall(async (request) => {
   // 新しい累計
   const newTotal = currentTotal + linesCleared;
 
+  const tetrisRewardDoc = await db.collection('config').doc('tetrisRewards').get();
+  const tetrisRewardConfig = tetrisRewardDoc.exists
+    ? { ...DEFAULT_TETRIS_REWARDS, ...tetrisRewardDoc.data() }
+    : DEFAULT_TETRIS_REWARDS;
+  const firstTierLimit = Number(tetrisRewardConfig.firstTierLimit);
+  const firstTierMultiplier = Number(tetrisRewardConfig.firstTierMultiplier);
+  const secondTierLimit = Number(tetrisRewardConfig.secondTierLimit);
+  const secondTierMultiplier = Number(tetrisRewardConfig.secondTierMultiplier);
+
   // ポイント計算ロジック：
-  // 1~10列: 列数×10pt、11~100列: 列数×1pt、101列~: ポイントなし
-  // 既に100列を超えている場合は、もうポイントなし
+  // 1~firstTierLimit列: 列数×firstTierMultiplierpt、(firstTierLimit+1)~secondTierLimit列: 列数×secondTierMultiplierpt、以降: ポイントなし
   let pointsAwarded = 0;
 
-  if (currentTotal >= 100) {
-    // 既に100列超えている → もうポイントはもらえない
+  if (currentTotal >= secondTierLimit) {
     pointsAwarded = 0;
-  } else if (newTotal <= 10) {
-    // まだ10列以下 → 今回の列数×10pt
-    pointsAwarded = linesCleared * 10;
-  } else if (currentTotal < 10 && newTotal > 10) {
-    // 10列をまたぐ場合
-    // 10列までの分は×10pt、それ以降は×1pt（ただし100列まで）
-    const pointsUpTo10 = (10 - currentTotal) * 10;
-    const linesAfter10 = Math.min(newTotal - 10, 100 - 10);
-    const pointsAfter10 = linesAfter10 * 1;
-    pointsAwarded = pointsUpTo10 + pointsAfter10;
-  } else if (currentTotal >= 10 && newTotal <= 100) {
-    // 11~100列の範囲内 → 今回の列数×1pt
-    pointsAwarded = linesCleared * 1;
-  } else if (currentTotal < 100 && newTotal > 100) {
-    // 100列をまたぐ場合
-    const linesUpTo100 = 100 - currentTotal;
-    pointsAwarded = linesUpTo100 * 1;
+  } else if (newTotal <= firstTierLimit) {
+    pointsAwarded = linesCleared * firstTierMultiplier;
+  } else if (currentTotal < firstTierLimit && newTotal > firstTierLimit) {
+    const pointsUpToFirstTier = (firstTierLimit - currentTotal) * firstTierMultiplier;
+    const linesAfterFirstTier = Math.min(newTotal - firstTierLimit, secondTierLimit - firstTierLimit);
+    const pointsAfterFirstTier = linesAfterFirstTier * secondTierMultiplier;
+    pointsAwarded = pointsUpToFirstTier + pointsAfterFirstTier;
+  } else if (currentTotal >= firstTierLimit && newTotal <= secondTierLimit) {
+    pointsAwarded = linesCleared * secondTierMultiplier;
+  } else if (currentTotal < secondTierLimit && newTotal > secondTierLimit) {
+    const linesUpToSecondTier = secondTierLimit - currentTotal;
+    pointsAwarded = linesUpToSecondTier * secondTierMultiplier;
   } else {
-    // 101列以降 → ポイントなし
     pointsAwarded = 0;
   }
 
@@ -1478,12 +1625,19 @@ export const submitTetrisScore = functions.https.onCall(async (request) => {
     }
   });
 
+  const tetrisBadges: string[] = [];
+  if (typeof score === 'number' && score >= 1000) tetrisBadges.push('tetris_1000');
+  if (typeof score === 'number' && score >= 5000) tetrisBadges.push('tetris_5000');
+  if (tetrisBadges.length > 0) {
+    await awardBadgesIfNeeded(uid, tetrisBadges);
+  }
+
   return {
     success: true,
     pointsAwarded,
     totalToday: newTotal,
-    maxToday: 100,
-    message: newTotal > 100 ? '本日の上限（100列）に達しました' : undefined
+    maxToday: secondTierLimit,
+    message: newTotal > secondTierLimit ? `本日の上限（${secondTierLimit}列）に達しました` : undefined
   };
 });
 
@@ -1493,10 +1647,7 @@ export const pullGacha = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const uid = request.auth.uid;
   const userDocRef = db.collection('users').doc(uid);
@@ -1611,6 +1762,23 @@ export const pullGacha = functions.https.onCall(async (request) => {
     }
   });
 
+  const gachaBadges = ['first_gacha'];
+  if (selected.rarity === 'legendary') {
+    gachaBadges.push('gacha_legendary');
+  }
+
+  const [allItemsSnap, historySnap] = await Promise.all([
+    db.collection('gachaItems').where('isActive', '==', true).get(),
+    db.collection('gachaHistory').where('userId', '==', uid).get(),
+  ]);
+  const totalItemCount = allItemsSnap.size;
+  const obtainedCount = new Set(historySnap.docs.map((docSnap) => docSnap.data().itemId as string)).size;
+  const completionRate = totalItemCount > 0 ? obtainedCount / totalItemCount : 0;
+
+  if (completionRate >= 0.5) gachaBadges.push('gacha_collector_50');
+  if (completionRate >= 1) gachaBadges.push('gacha_collector_100');
+  await awardBadgesIfNeeded(uid, gachaBadges);
+
   return {
     success: true,
     item: {
@@ -1632,10 +1800,7 @@ export const pullGachaBatch = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const count = (request.data as { count?: number })?.count ?? 1;
   if (count < 1 || count > 10) {
@@ -1770,6 +1935,23 @@ export const pullGachaBatch = functions.https.onCall(async (request) => {
       });
     }
   });
+
+  const gachaBadges = ['first_gacha'];
+  if (selectedItems.some((item) => item.rarity === 'legendary')) {
+    gachaBadges.push('gacha_legendary');
+  }
+
+  const [allItemsSnap, historySnap] = await Promise.all([
+    db.collection('gachaItems').where('isActive', '==', true).get(),
+    db.collection('gachaHistory').where('userId', '==', uid).get(),
+  ]);
+  const totalItemCount = allItemsSnap.size;
+  const obtainedCount = new Set(historySnap.docs.map((docSnap) => docSnap.data().itemId as string)).size;
+  const completionRate = totalItemCount > 0 ? obtainedCount / totalItemCount : 0;
+
+  if (completionRate >= 0.5) gachaBadges.push('gacha_collector_50');
+  if (completionRate >= 1) gachaBadges.push('gacha_collector_100');
+  await awardBadgesIfNeeded(uid, gachaBadges);
 
   return {
     success: true,
@@ -2207,10 +2389,7 @@ export const claimNotificationPoints = functions.https.onCall(async (request) =>
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const uid = request.auth.uid;
   const { notificationId } = request.data as { notificationId: string };
@@ -2304,6 +2483,50 @@ export const updateNotificationReadCount = functions.firestore.onDocumentCreated
     } catch (error) {
       console.error(`Failed to update readCount for notification ${notifId}:`, error);
       // Don't throw - allow the subcollection write to succeed even if parent update fails
+    }
+  }
+);
+
+export const syncRecentPointHistory = functions.firestore.onDocumentCreated(
+  'pointHistory/{historyId}',
+  async (event) => {
+    const snapshot = event.data;
+    if (!snapshot) return;
+
+    try {
+      const data = snapshot.data();
+      const userId = data.userId as string | undefined;
+      if (!userId) return;
+
+      const userRef = db.collection('users').doc(userId);
+      const userDoc = await userRef.get();
+      if (!userDoc.exists) return;
+
+      const currentRecent = (userDoc.data()?.recentPointHistory || []) as Array<{
+        id: string;
+        points: number;
+        reason: string;
+        details: string;
+        createdAt: admin.firestore.Timestamp;
+      }>;
+
+      const nextItem = {
+        id: snapshot.id,
+        points: data.points || 0,
+        reason: data.reason || 'game_result',
+        details: data.details || '',
+        createdAt: data.createdAt || admin.firestore.Timestamp.now(),
+      };
+
+      const merged = [nextItem, ...currentRecent.filter((item) => item.id !== snapshot.id)]
+        .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis())
+        .slice(0, 10);
+
+      await userRef.update({
+        recentPointHistory: merged,
+      });
+    } catch (error) {
+      console.error('Failed to sync recent point history:', error);
     }
   }
 );
@@ -2741,10 +2964,7 @@ export const bulkDistributeByClass = functions.https.onCall(async (request) => {
     throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
   }
 
-  const email = request.auth.token?.email || '';
-  if (!isValidDomain(email)) {
-    throw new functions.https.HttpsError('permission-denied', 'ドメインが無効です');
-  }
+  await assertValidDomain(request.auth.token?.email || '');
 
   const adminDoc = await db.collection('users').doc(request.auth.uid).get();
   if (!adminDoc.exists || !['admin', 'staff'].includes(adminDoc.data()!.role)) {
@@ -2889,5 +3109,283 @@ export const bulkDistributeByClass = functions.https.onCall(async (request) => {
     successCount,
     totalCount: targetUsers.length,
     errors: errors.length > 0 ? errors : undefined,
+  };
+});
+
+// ============================================================
+// Cloudflare R2 画像アップロード
+// ============================================================
+
+// R2 Secrets定義
+const r2AccessKeyId = defineSecret('R2_ACCESS_KEY_ID');
+const r2SecretAccessKey = defineSecret('R2_SECRET_ACCESS_KEY');
+const r2AccountId = defineSecret('R2_ACCOUNT_ID');
+const r2BucketName = defineSecret('R2_BUCKET_NAME');
+const r2PublicUrl = defineSecret('R2_PUBLIC_URL');
+
+// プリサインドアップロードURL生成
+export const getUploadUrl = functions.https.onCall(
+  {
+    secrets: [r2AccessKeyId, r2SecretAccessKey, r2AccountId, r2BucketName, r2PublicUrl],
+  },
+  async (request) => {
+  // 認証チェック
+  if (!request.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'ログインが必要です');
+  }
+
+  await assertValidDomain(request.auth.token?.email || '');
+
+  const { fileName, fileType, fileSize } = request.data as {
+    fileName?: string;
+    fileType?: string;
+    fileSize?: number;
+  };
+
+  // ファイルタイプ検証
+  const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+  if (!fileType || !allowedTypes.includes(fileType)) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      '対応していないファイル形式です。JPEG, PNG, WebP, GIFのみ対応しています。'
+    );
+  }
+
+  // ファイル名検証
+  if (!fileName || typeof fileName !== 'string' || fileName.length > 200) {
+    throw new functions.https.HttpsError('invalid-argument', 'ファイル名が不正です');
+  }
+
+  if (typeof fileSize !== 'number' || !Number.isFinite(fileSize) || fileSize <= 0 || fileSize > MAX_UPLOAD_SIZE_BYTES) {
+    throw new functions.https.HttpsError('invalid-argument', '画像サイズが大きすぎます');
+  }
+
+  const safeFileSize = fileSize;
+
+  try {
+    // デバッグ: Secretsの値を確認（最初の8文字のみ）
+    const accountId = r2AccountId.value();
+    const accessKey = r2AccessKeyId.value();
+    const secretKey = r2SecretAccessKey.value();
+    console.log('R2 Config:', {
+      accountIdPrefix: accountId?.substring(0, 8),
+      accountIdLength: accountId?.length,
+      hasAccessKey: !!accessKey,
+      hasSecretKey: !!secretKey,
+    });
+
+    // R2クライアントの初期化
+    const endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
+    console.log('R2 Endpoint:', endpoint);
+
+    const r2Client = new S3Client({
+      region: 'auto',
+      endpoint,
+      forcePathStyle: true, // R2はパススタイルURL必須
+      credentials: {
+        accessKeyId: accessKey,
+        secretAccessKey: secretKey,
+      },
+    });
+
+    // ユニークなファイル名生成
+    const timestamp = Date.now();
+    const randomStr = Math.random().toString(36).substring(2, 15);
+    const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const key = `users/${request.auth.uid}/${timestamp}_${randomStr}_${sanitizedFileName}`;
+
+    const bucketName = r2BucketName.value();
+    console.log('Creating PutObjectCommand:', { bucketName, key, fileType });
+
+    // プリサインドURL生成（15分間有効）
+    const command = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: key,
+      ContentType: fileType,
+      ContentLength: safeFileSize,
+    });
+
+    console.log('Calling getSignedUrl...');
+    const uploadUrl = await getSignedUrl(r2Client, command, {
+      expiresIn: 900, // 15分
+    });
+    console.log('getSignedUrl success, URL length:', uploadUrl?.length);
+
+    // 公開URL
+    const publicUrl = `${r2PublicUrl.value()}/${key}`;
+
+    // ログ記録
+    await db.collection('uploadLogs').add({
+      userId: request.auth.uid,
+      fileName: sanitizedFileName,
+      fileType,
+      fileSize: safeFileSize,
+      key,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return {
+      uploadUrl,
+      publicUrl,
+      key,
+    };
+  } catch (error) {
+    console.error('Failed to generate upload URL:', error);
+    throw new functions.https.HttpsError(
+      'internal',
+      'アップロードURLの生成に失敗しました'
+    );
+  }
+});
+
+export const toggleExecutiveQALike = functions.https.onCall(async (request) => {
+  if (!request.auth) {
+    throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+  }
+
+  await assertValidDomain(request.auth.token?.email || '');
+
+  const { questionId } = request.data as { questionId?: string };
+  if (!questionId || typeof questionId !== 'string') {
+    throw new functions.https.HttpsError('invalid-argument', '質問IDが不正です');
+  }
+
+  const questionRef = db.collection('executiveQA').doc(questionId);
+  const uid = request.auth.uid;
+
+  const result = await db.runTransaction(async (transaction) => {
+    const questionDoc = await transaction.get(questionRef);
+    if (!questionDoc.exists) {
+      throw new functions.https.HttpsError('not-found', '質問が見つかりません');
+    }
+
+    const data = questionDoc.data() || {};
+    const likedBy = Array.isArray(data.likedBy) ? (data.likedBy as string[]) : [];
+    const hasLiked = likedBy.includes(uid);
+    const nextLikedBy = hasLiked
+      ? likedBy.filter((id) => id !== uid)
+      : [...likedBy, uid];
+
+    transaction.update(questionRef, {
+      likedBy: nextLikedBy,
+      likes: nextLikedBy.length,
+    });
+
+    return { liked: !hasLiked, likes: nextLikedBy.length };
+  });
+
+  return {
+    success: true,
+    ...result,
+  };
+});
+
+// スタンプラリー: コード検証 & スタンプ記録
+export const verifyStampCode = functions.https.onCall(async (request) => {
+  if (!request.auth) {
+    throw new functions.https.HttpsError('unauthenticated', '認証が必要です');
+  }
+
+  await assertValidDomain(request.auth.token?.email || '');
+
+  const uid = request.auth.uid;
+  const { stampCode } = request.data as { stampCode: string };
+
+  if (!stampCode || typeof stampCode !== 'string') {
+    throw new functions.https.HttpsError('invalid-argument', 'スタンプコードが不正です');
+  }
+
+  // Find booth by stampCode
+  const boothSnap = await db.collection('booths')
+    .where('stampCode', '==', stampCode.trim().toUpperCase())
+    .where('isActive', '==', true)
+    .limit(1)
+    .get();
+
+  if (boothSnap.empty) {
+    throw new functions.https.HttpsError('not-found', '無効なスタンプコードです');
+  }
+
+  const boothDoc = boothSnap.docs[0];
+  const boothData = boothDoc.data();
+  const boothId = boothDoc.id;
+
+  // Check if already stamped
+  const existingStamp = await db.collection('stampRally')
+    .where('userId', '==', uid)
+    .where('boothId', '==', boothId)
+    .limit(1)
+    .get();
+
+  if (!existingStamp.empty) {
+    return { success: false, message: 'このブースは既にスタンプ済みです', boothName: boothData.name };
+  }
+
+  const pointsAwarded = boothData.points || 5;
+  const userDocRef = db.collection('users').doc(uid);
+  const userDoc = await userDocRef.get();
+
+  if (!userDoc.exists) {
+    throw new functions.https.HttpsError('not-found', 'ユーザーが見つかりません');
+  }
+
+  const userData = userDoc.data()!;
+  const classRef = getClassRef(userData);
+
+  await db.runTransaction(async (transaction) => {
+    const classDoc = classRef ? await transaction.get(classRef) : null;
+
+    // Record stamp
+    const stampRef = db.collection('stampRally').doc();
+    transaction.set(stampRef, {
+      userId: uid,
+      boothId,
+      visitedAt: admin.firestore.FieldValue.serverTimestamp(),
+      pointsAwarded,
+    });
+
+    // Award points
+    if (pointsAwarded > 0) {
+      const historyRef = db.collection('pointHistory').doc();
+      transaction.set(historyRef, {
+        userId: uid,
+        points: pointsAwarded,
+        reason: 'game_result',
+        details: `スタンプラリー: ${boothData.name}`,
+        grantedBy: 'system',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      transaction.update(userDocRef, {
+        totalPoints: admin.firestore.FieldValue.increment(pointsAwarded),
+      });
+
+      if (classRef && classDoc) {
+        writeClassPoints(transaction, classRef, classDoc, userData as { grade: number; class: string }, pointsAwarded);
+      }
+    }
+  });
+
+  // Check if stamp rally complete
+  const allBooths = await db.collection('booths').where('isActive', '==', true).where('stampCode', '!=', '').get();
+  const userStamps = await db.collection('stampRally').where('userId', '==', uid).get();
+  const isComplete = userStamps.size + 1 >= allBooths.size; // +1 for the one just added
+
+  // Award stamp rally completion badge
+  if (isComplete) {
+    const currentBadges: string[] = userData.badges || [];
+    if (!currentBadges.includes('stamp_rally_complete')) {
+      await userDocRef.update({
+        badges: admin.firestore.FieldValue.arrayUnion('stamp_rally_complete'),
+      });
+    }
+  }
+
+  return {
+    success: true,
+    message: `${boothData.name}のスタンプを獲得しました！`,
+    boothName: boothData.name,
+    pointsAwarded,
+    isComplete,
   };
 });

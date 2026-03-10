@@ -1,10 +1,9 @@
 import { useState, useRef } from 'react'
-import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import imageCompression from 'browser-image-compression'
-import app from '@/lib/firebase'
+import heic2any from 'heic2any'
+import { functions } from '@/lib/firebase'
+import { httpsCallable } from 'firebase/functions'
 import { toGoogleDriveDirectUrl, isGoogleDriveUrl } from '@/lib/googleDrive'
-
-const storage = getStorage(app)
 
 interface ImageUploaderProps {
   imageUrl: string
@@ -22,47 +21,119 @@ export function ImageUploader({ imageUrl, onChange, label = '画像', showGoogle
   const [showHelp, setShowHelp] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
+  const getErrorMessage = (error: unknown) => {
+    if (error instanceof Error) {
+      if (error.message.includes('unauthenticated')) {
+        return 'ログインが必要です。'
+      }
+      if (error.message.includes('invalid-argument')) {
+        return '対応していないファイル形式です。JPEG, PNG, WebP, GIFのみ対応しています。'
+      }
+      return error.message
+    }
+    return '画像のアップロードに失敗しました。'
+  }
+
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
+
+    // ファイルタイプチェック（HEICも許可）
+    const isHeic = file.type === 'image/heic' || file.type === 'image/heif' ||
+                   file.name.toLowerCase().endsWith('.heic') || file.name.toLowerCase().endsWith('.heif')
+    if (!file.type.startsWith('image/') && !isHeic) {
+      setError('画像ファイルを選択してください')
+      return
+    }
 
     setUploading(true)
     setProgress(0)
     setError(null)
 
     try {
-      // 画像圧縮オプション
-      const options = {
-        maxSizeMB: 1, // 最大1MBに圧縮
-        maxWidthOrHeight: 1920, // 最大幅/高さ
-        useWebWorker: true, // Web Workerを使用（メインスレッドをブロックしない）
-        onProgress: (p: number) => setProgress(p)
+      let fileToCompress: File | Blob = file
+      let fileName = file.name
+
+      // HEICファイルをJPEGに変換
+      if (isHeic) {
+        console.log('[ImageUploader] HEIC検出、JPEGに変換中...')
+        setProgress(5)
+        const convertedBlob = await heic2any({
+          blob: file,
+          toType: 'image/jpeg',
+          quality: 0.9,
+        })
+        fileToCompress = Array.isArray(convertedBlob) ? convertedBlob[0] : convertedBlob
+        fileName = file.name.replace(/\.(heic|heif)$/i, '.jpg')
+        console.log('[ImageUploader] HEIC変換完了')
+        setProgress(15)
       }
 
-      setProgress(10)
+      // 画像圧縮オプション（より小さく圧縮）
+      const options = {
+        maxSizeMB: 0.5, // 最大500KBに圧縮
+        maxWidthOrHeight: 1280, // 最大幅/高さを1280に
+        useWebWorker: true,
+        onProgress: (p: number) => setProgress(Math.floor(15 + p * 0.2)) // 15-35%
+      }
+
+      console.log('[ImageUploader] 画像圧縮開始:', fileName, `${(fileToCompress.size / 1024 / 1024).toFixed(2)}MB`)
 
       // 画像を圧縮
-      const compressedFile = await imageCompression(file, options)
+      const compressedFile = await imageCompression(fileToCompress as File, options)
+      console.log('[ImageUploader] 圧縮完了:', `${(compressedFile.size / 1024 / 1024).toFixed(2)}MB`)
 
+      setProgress(40)
+
+      // Cloud FunctionからプリサインドアップロードURLを取得
+      console.log('[ImageUploader] プリサインドURL取得中...')
+      const getUploadUrl = httpsCallable<
+        { fileName: string; fileType: string; fileSize: number },
+        { uploadUrl: string; publicUrl: string; key: string }
+      >(functions, 'getUploadUrl')
+
+      const { data } = await getUploadUrl({
+        fileName: fileName,
+        fileType: compressedFile.type,
+        fileSize: compressedFile.size,
+      })
+
+      console.log('[ImageUploader] プリサインドURL取得完了')
       setProgress(50)
 
-      // Firebase Storageにアップロード
-      const storageRef = ref(storage, `uploads/${Date.now()}-${file.name}`)
-      await uploadBytes(storageRef, compressedFile)
+      // R2に直接アップロード
+      console.log('[ImageUploader] R2へアップロード開始...')
+      const uploadResponse = await fetch(data.uploadUrl, {
+        method: 'PUT',
+        body: compressedFile,
+        headers: {
+          'Content-Type': compressedFile.type,
+        },
+      })
+
+      console.log('[ImageUploader] アップロードレスポンス:', uploadResponse.status)
+
+      if (!uploadResponse.ok) {
+        const errorText = await uploadResponse.text()
+        console.error('[ImageUploader] アップロードエラー:', errorText)
+        throw new Error(`アップロードに失敗しました (${uploadResponse.status})`)
+      }
 
       setProgress(90)
 
-      // ダウンロードURLを取得
-      const url = await getDownloadURL(storageRef)
-      onChange(url)
+      // 公開URLを設定
+      console.log('[ImageUploader] アップロード完了:', data.publicUrl)
+      onChange(data.publicUrl)
 
       setProgress(100)
+
+      // 成功メッセージを一時的に表示
+      setTimeout(() => setProgress(0), 500)
     } catch (err) {
-      console.error('Image upload failed:', err)
-      setError('画像のアップロードに失敗しました。画像サイズを確認してください。')
+      console.error('[ImageUploader] エラー:', err)
+      setError(getErrorMessage(err))
     } finally {
       setUploading(false)
-      setProgress(0)
       if (fileRef.current) fileRef.current.value = ''
     }
   }
@@ -149,7 +220,7 @@ export function ImageUploader({ imageUrl, onChange, label = '画像', showGoogle
 
           {!imageUrl && (
             <p className="text-xs text-hatofes-gray mt-1">
-              ※ 画像は自動的に圧縮されます（最大1MB）
+              ※ 大きな画像も自動圧縮されます
             </p>
           )}
         </>

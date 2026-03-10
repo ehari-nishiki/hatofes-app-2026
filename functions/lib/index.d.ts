@@ -4,13 +4,23 @@ export declare const awardLoginBonus: functions.https.CallableFunction<any, Prom
     message: string;
     points?: undefined;
     tickets?: undefined;
+    streak?: undefined;
+    streakBonus?: undefined;
+    newBadge?: undefined;
 } | {
     success: boolean;
     message: string;
     points: any;
     tickets: any;
+    streak: number;
+    streakBonus: number;
+    newBadge: string | null;
 }>, unknown>;
 export declare const updateLoginBonusConfig: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    message: string;
+}>, unknown>;
+export declare const updateTetrisRewardConfig: functions.https.CallableFunction<any, Promise<{
     success: boolean;
     message: string;
 }>, unknown>;
@@ -217,6 +227,9 @@ export declare const updateNotificationReadCount: functions.CloudFunction<functi
     userId: string;
     notifId: string;
 }>>;
+export declare const syncRecentPointHistory: functions.CloudFunction<functions.firestore.FirestoreEvent<functions.firestore.QueryDocumentSnapshot | undefined, {
+    historyId: string;
+}>>;
 /**
  * Migration function to convert readBy arrays to readStatus subcollections
  * This is a one-time migration function for existing notifications
@@ -273,5 +286,28 @@ export declare const bulkDistributeByClass: functions.https.CallableFunction<any
     successCount: number;
     totalCount: number;
     errors: string[] | undefined;
+}>, unknown>;
+export declare const getUploadUrl: functions.https.CallableFunction<any, Promise<{
+    uploadUrl: string;
+    publicUrl: string;
+    key: string;
+}>, unknown>;
+export declare const toggleExecutiveQALike: functions.https.CallableFunction<any, Promise<{
+    liked: boolean;
+    likes: number;
+    success: boolean;
+}>, unknown>;
+export declare const verifyStampCode: functions.https.CallableFunction<any, Promise<{
+    success: boolean;
+    message: string;
+    boothName: any;
+    pointsAwarded?: undefined;
+    isComplete?: undefined;
+} | {
+    success: boolean;
+    message: string;
+    boothName: any;
+    pointsAwarded: any;
+    isComplete: boolean;
 }>, unknown>;
 //# sourceMappingURL=index.d.ts.map

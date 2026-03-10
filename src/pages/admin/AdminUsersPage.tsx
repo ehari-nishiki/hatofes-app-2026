@@ -4,6 +4,9 @@ import { collection, getDocs, query, orderBy, doc, updateDoc, limit, startAfter,
 import { getFunctions, httpsCallable } from 'firebase/functions'
 import { db } from '@/lib/firebase'
 import app from '@/lib/firebase'
+import type { UserRole } from '@/types/firestore'
+import { RoleBadge, getRoleDisplayLabel } from '@/lib/roleDisplay'
+import { DEPARTMENT_OPTIONS } from '@/lib/departments'
 
 const USERS_PER_PAGE = 100
 
@@ -34,13 +37,6 @@ const getUserDisplayName = (user: User): string => {
     return `${user.username} (${user.grade}-${user.class})`
   }
   return user.username
-}
-
-const roleLabels: Record<string, string> = {
-  student: '生徒',
-  teacher: '教員',
-  staff: 'スタッフ',
-  admin: '管理者',
 }
 
 export default function AdminUsersPage() {
@@ -128,7 +124,7 @@ export default function AdminUsersPage() {
 
     try {
       await updateUserRoleFn({ userId: editingUser.id, role: newRole })
-      setMessage({ type: 'success', text: `${editingUser.username} のロールを ${roleLabels[newRole]} に変更しました` })
+      setMessage({ type: 'success', text: `${editingUser.username} のロールを ${getRoleDisplayLabel(newRole as UserRole)} に変更しました` })
       // Update locally instead of refetching all users
       setUsers(prev => prev.map(u => u.id === editingUser.id ? { ...u, role: newRole } : u))
       setEditingUser(null)
@@ -188,22 +184,22 @@ export default function AdminUsersPage() {
   )
 
   return (
-    <div className="min-h-screen bg-hatofes-bg">
+    <div className="min-h-screen bg-[#11161a] text-white">
       {/* Header */}
-      <header className="bg-hatofes-dark border-b border-hatofes-gray-lighter px-4 py-4">
-        <div className="max-w-4xl mx-auto flex items-center justify-between">
+      <header className="border-b border-white/6 bg-[#161d22] px-4 py-4">
+        <div className="mx-auto flex max-w-6xl items-center justify-between">
           <div className="flex items-center gap-4">
             <Link to="/admin" className="text-hatofes-gray hover:text-hatofes-white">
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
               </svg>
             </Link>
-            <h1 className="font-display text-xl font-bold text-hatofes-white">ユーザー管理</h1>
+            <h1 className="text-xl font-semibold tracking-[-0.04em] text-white">ユーザー管理</h1>
           </div>
         </div>
       </header>
 
-      <main className="max-w-4xl mx-auto px-4 py-8">
+      <main className="mx-auto max-w-6xl px-4 py-6">
         {message && (
           <div className={`mb-4 p-4 rounded-lg ${message.type === 'success' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
             {message.text}
@@ -211,24 +207,24 @@ export default function AdminUsersPage() {
         )}
 
         {/* Stats */}
-        <div className="grid grid-cols-5 gap-2 mb-6">
-          <div className="card text-center py-3">
+        <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-5">
+          <div className="rounded-[1rem] bg-white/[0.045] py-4 text-center">
             <p className="text-2xl font-bold text-hatofes-white">{userStats.total}</p>
             <p className="text-xs text-hatofes-gray">合計</p>
           </div>
-          <div className="card text-center py-3">
+          <div className="rounded-[1rem] bg-white/[0.045] py-4 text-center">
             <p className="text-2xl font-bold text-blue-400">{userStats.students}</p>
             <p className="text-xs text-hatofes-gray">生徒</p>
           </div>
-          <div className="card text-center py-3">
+          <div className="rounded-[1rem] bg-white/[0.045] py-4 text-center">
             <p className="text-2xl font-bold text-green-400">{userStats.teachers}</p>
             <p className="text-xs text-hatofes-gray">教員</p>
           </div>
-          <div className="card text-center py-3">
+          <div className="rounded-[1rem] bg-white/[0.045] py-4 text-center">
             <p className="text-2xl font-bold text-purple-400">{userStats.staff}</p>
             <p className="text-xs text-hatofes-gray">スタッフ</p>
           </div>
-          <div className="card text-center py-3">
+          <div className="rounded-[1rem] bg-white/[0.045] py-4 text-center">
             <p className="text-2xl font-bold text-hatofes-accent-yellow">{userStats.admins}</p>
             <p className="text-xs text-hatofes-gray">管理者</p>
           </div>
@@ -243,18 +239,8 @@ export default function AdminUsersPage() {
               <div className="bg-hatofes-bg p-4 rounded-lg mb-4">
                 <p className="text-hatofes-white font-medium">{editingUser.username}</p>
                 <p className="text-sm text-hatofes-gray">{editingUser.email}</p>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="text-sm text-hatofes-gray">
-                    ロール: <span className="text-hatofes-white">{roleLabels[editingUser.role]}</span>
-                  </span>
-                  {editingUser.department && (
-                    <>
-                      <span className="text-hatofes-gray">•</span>
-                      <span className="text-sm text-hatofes-gray">
-                        係: <span className="text-hatofes-white">{editingUser.department}</span>
-                      </span>
-                    </>
-                  )}
+                <div className="mt-2">
+                  <RoleBadge role={editingUser.role as UserRole} department={editingUser.department} />
                 </div>
               </div>
 
@@ -285,11 +271,17 @@ export default function AdminUsersPage() {
                   <label className="block text-sm text-hatofes-gray mb-2">係（任意）</label>
                   <input
                     type="text"
+                    list="department-options"
                     value={newDepartment}
                     onChange={e => setNewDepartment(e.target.value)}
-                    placeholder="例: 広報係、会計係、実行委員長など"
+                    placeholder="係を選択または入力"
                     className="w-full bg-hatofes-bg border border-hatofes-gray rounded-lg px-4 py-2 text-hatofes-white"
                   />
+                  <datalist id="department-options">
+                    {DEPARTMENT_OPTIONS.map((department) => (
+                      <option key={department} value={department} />
+                    ))}
+                  </datalist>
                   <p className="text-xs text-hatofes-gray mt-1">※ 係は権限に影響しません（表示のみ）</p>
                   <button
                     onClick={handleUpdateDepartment}
@@ -311,7 +303,7 @@ export default function AdminUsersPage() {
         )}
 
         {/* Search and Filter */}
-        <div className="card mb-6">
+        <div className="mb-6 rounded-[1.2rem] bg-white/[0.045] p-4">
           <div className="flex flex-col sm:flex-row gap-4">
             <input
               type="text"
@@ -335,7 +327,7 @@ export default function AdminUsersPage() {
         </div>
 
         {/* User List */}
-        <div className="card">
+        <div className="rounded-[1.2rem] bg-white/[0.045] p-4">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-bold text-hatofes-white">
               ユーザー一覧 ({filteredUsers.length}人{searchTerm || roleFilter !== 'all' ? ' / フィルタ済' : ` / 全${totalCount}人`})
@@ -370,19 +362,12 @@ export default function AdminUsersPage() {
           ) : (
             <div className="max-h-[500px] overflow-y-auto space-y-2">
               {filteredUsers.map(user => (
-                <div key={user.id} className="bg-hatofes-dark p-3 rounded-lg">
+                <div key={user.id} className="rounded-[1rem] bg-[#0f1418] p-4">
                   <div className="flex items-center justify-between">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <p className="text-hatofes-white font-medium truncate">{getUserDisplayName(user)}</p>
-                        <span className={`text-xs px-2 py-0.5 rounded ${
-                          user.role === 'admin' ? 'bg-hatofes-accent-yellow/20 text-hatofes-accent-yellow' :
-                          user.role === 'staff' ? 'bg-purple-500/20 text-purple-400' :
-                          user.role === 'teacher' ? 'bg-green-500/20 text-green-400' :
-                          'bg-blue-500/20 text-blue-400'
-                        }`}>
-                          {roleLabels[user.role]}
-                        </span>
+                        <RoleBadge role={user.role as UserRole} department={user.department} size="sm" />
                       </div>
                       <p className="text-xs text-hatofes-gray truncate">{user.email}</p>
                       <div className="flex items-center gap-2 text-xs text-hatofes-gray mt-1">

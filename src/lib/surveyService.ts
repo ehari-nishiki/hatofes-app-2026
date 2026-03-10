@@ -85,9 +85,11 @@ export async function submitSurveyResponse(
   _userId: string,
   surveyId: string,
   answers: Answer[],
-  _points: number
+  _points?: number
 ): Promise<{ success: boolean; message: string; pointsAwarded?: number }> {
   try {
+    void _userId;
+    void _points;
     const result = await submitSurveyResponseFn({ surveyId, answers });
     return result.data;
   } catch (error: unknown) {

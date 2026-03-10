@@ -85,7 +85,7 @@ export class CacheService {
           if (now - entry.timestamp > entry.expiresIn) {
             localStorage.removeItem(k)
           }
-        } catch (e) {
+        } catch {
           // Invalid cache entry, remove it
           localStorage.removeItem(k)
         }

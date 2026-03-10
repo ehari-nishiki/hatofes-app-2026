@@ -22,6 +22,22 @@
   --color-shadow: rgba(255, 255, 255, 0.15);
   --color-overlay: rgba(0, 0, 0, 0.8);
   --color-input-bg: #0d0d0d;
+
+  /* ステータスカラー */
+  --color-status-success: #4ade80;
+  --color-status-error: #f87171;
+  --color-status-warning: #fbbf24;
+  --color-status-info: #60a5fa;
+
+  /* 機能アクセントカラー */
+  --color-feature-radio: #ef4444;
+  --color-feature-tetris: #00d4ff;
+  --color-feature-qa: #a855f7;
+  --color-feature-stamp: #34d399;
+  --color-feature-challenge: #ec4899;
+
+  /* レアリティカラー */
+  --color-rarity-epic: #a855f7;
 }
 
 [data-theme="light"] {
@@ -39,6 +55,22 @@
   --color-shadow: rgba(0, 0, 0, 0.1);
   --color-overlay: rgba(255, 255, 255, 0.9);
   --color-input-bg: #ffffff;
+
+  /* ステータスカラー（ライト） */
+  --color-status-success: #16a34a;
+  --color-status-error: #dc2626;
+  --color-status-warning: #d97706;
+  --color-status-info: #2563eb;
+
+  /* 機能アクセントカラー（ライト） */
+  --color-feature-radio: #dc2626;
+  --color-feature-tetris: #0891b2;
+  --color-feature-qa: #7c3aed;
+  --color-feature-stamp: #059669;
+  --color-feature-challenge: #db2777;
+
+  /* レアリティカラー（ライト） */
+  --color-rarity-epic: #7c3aed;
 }
 
 /* カスタムベーススタイル */
@@ -78,8 +110,8 @@
   .btn-main {
     background: linear-gradient(135deg, var(--color-accent-yellow) 0%, var(--color-accent-orange) 100%);
     color: #ffffff;
-    padding: 0.5rem 1.5rem;
-    border-radius: 0.25rem;
+    padding: 0.625rem 1.5rem;
+    border-radius: 9999px;
     font-weight: 500;
     font-size: 0.875rem;
     letter-spacing: 0.025em;
@@ -99,8 +131,8 @@
   .btn-sub {
     background: transparent;
     color: var(--color-text-primary);
-    padding: 0.5rem 1.5rem;
-    border-radius: 0.25rem;
+    padding: 0.625rem 1.5rem;
+    border-radius: 9999px;
     font-weight: 500;
     font-size: 0.875rem;
     letter-spacing: 0.025em;
@@ -120,7 +152,14 @@
     border-radius: 0.75rem;
     padding: 1rem;
     box-shadow: 0 0 25px 0 var(--color-shadow);
-    transition: background-color 0.3s ease, box-shadow 0.3s ease;
+    transition: all 0.3s ease;
+    border: 1px solid transparent;
+  }
+
+  .card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 40px 0 var(--color-shadow);
+    border-color: rgba(255, 255, 255, 0.3);
   }
 
   /* ライトモード用カードボーダー */
@@ -147,7 +186,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: linear-gradient(135deg, var(--color-accent-yellow) 0%, var(--color-accent-orange) 100%);
+    background: #e24d4d;
     color: #ffffff;
     font-size: 0.75rem;
     font-weight: 700;
@@ -232,14 +271,61 @@
   .theme-border {
     border-color: var(--color-border);
   }
+
+  .home-panel {
+    background-color: #11161a;
+  }
+
+  .home-card {
+    background-color: rgba(255, 255, 255, 0.045);
+    border: 1px solid transparent;
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.12);
+  }
+
+  .home-subcard {
+    background-color: rgba(0, 0, 0, 0.14);
+    border: 1px solid transparent;
+  }
+}
+
+[data-theme="light"] .home-dashboard .home-panel {
+  background-color: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-light);
+  color: var(--color-text-primary);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] .home-dashboard .home-card {
+  background-color: var(--color-bg-card);
+  border-color: color-mix(in srgb, var(--color-border) 72%, white);
+  color: var(--color-text-primary);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+}
+
+[data-theme="light"] .home-dashboard .home-subcard {
+  background-color: var(--color-bg-elevated);
+  border-color: color-mix(in srgb, var(--color-border) 52%, white);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+[data-theme="light"] .home-dashboard [class~="text-white"] {
+  color: var(--color-text-primary) !important;
+}
+
+[data-theme="light"] .home-dashboard [class*="text-white/"] {
+  color: var(--color-text-secondary) !important;
+}
+
+[data-theme="light"] .home-dashboard .point-badge,
+[data-theme="light"] .home-dashboard .notification-badge {
+  color: #fff !important;
 }
 
 /* カスタムユーティリティ */
 @layer utilities {
-  /* すべての要素にDINフォントを優先適用（数字とアルファベット） */
-  * {
-    font-family: 'din-2014', 'hiragino-kaku-gothic-pron', sans-serif !important;
-    font-variant-numeric: tabular-nums;
+  /* DINフォントをデフォルトとして適用（!importantは避ける） */
+  body {
+    font-family: 'din-2014', 'hiragino-kaku-gothic-pron', sans-serif;
   }
 }
 
@@ -397,6 +483,37 @@
   z-index: 1;
 }
 
+.lp-panel {
+  border-radius: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 10px 24px rgba(0, 0, 0, 0.28),
+    0 1px 0 rgba(255, 255, 255, 0.08) inset,
+    0 0 0 1px rgba(255, 195, 0, 0.03);
+}
+
+.lp-panel:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 14px 32px rgba(0, 0, 0, 0.32),
+    0 1px 0 rgba(255, 255, 255, 0.1) inset,
+    0 0 0 1px rgba(255, 195, 0, 0.06);
+}
+
+.lp-subpanel {
+  border-radius: 0.875rem;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow:
+    0 6px 16px rgba(0, 0, 0, 0.2),
+    0 1px 0 rgba(255, 255, 255, 0.05) inset;
+}
+
+.lp-chip {
+  border-radius: 0.875rem;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+}
+
 /* ライトモード用のオーロラ調整 */
 [data-theme="light"] .aurora-effect {
   opacity: 0.4;
@@ -527,10 +644,62 @@
 .fade-in-delay-4 { animation-delay: 0.4s; opacity: 0; }
 .fade-in-delay-5 { animation-delay: 0.5s; opacity: 0; }
 
+/* ホームページ用アニメーション */
+@keyframes gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+.animate-gradient-shift {
+  background-size: 200% 200%;
+  animation: gradient-shift 3s ease infinite;
+}
+@keyframes pulse-border {
+  0%, 100% { border-color: rgba(255, 195, 0, 0.4); }
+  50% { border-color: rgba(255, 195, 0, 0.8); }
+}
+.animate-pulse-border {
+  animation: pulse-border 2s ease-in-out infinite;
+}
+@keyframes level-bar-fill {
+  from { width: 0; }
+  to { width: var(--bar-width); }
+}
+.animate-level-bar {
+  animation: level-bar-fill 1s ease-out forwards;
+}
+
 /* カードのふわふわシャドウ */
 .card-glow {
   position: relative;
   animation: shadow-float 4s ease-in-out infinite;
+}
+
+/* Live reaction floating emoji */
+@keyframes float-up {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-180px) scale(0.6);
+  }
+}
+.animate-float-up {
+  animation: float-up 2.5s ease-out forwards;
+}
+
+/* Streak fire animation */
+@keyframes streak-glow {
+  0%, 100% { text-shadow: 0 0 4px rgba(255, 107, 53, 0.4); }
+  50% { text-shadow: 0 0 12px rgba(255, 107, 53, 0.8); }
+}
+.animate-streak-glow {
+  animation: streak-glow 2s ease-in-out infinite;
 }
 
 .card-glow::after {

@@ -8,6 +8,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { Spinner } from '@/components/ui/Spinner'
 import { ImageUrlInput } from '@/components/ui/ImageUrlInput'
 import type { GachaItem, GachaRarity, GachaItemType } from '@/types/firestore'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 
 const functions = getFunctions(app)
 const grantGachaTicketsFn = httpsCallable<
@@ -134,6 +135,10 @@ export default function AdminGachaPage() {
   const [bulkSubmitting, setBulkSubmitting] = useState(false)
   const [bulkResult, setBulkResult] = useState<{ successCount: number; totalCount: number; errors?: string[] } | null>(null)
 
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string; message: string; variant: 'default' | 'danger'; onConfirm: () => void
+  } | null>(null)
+
   useEffect(() => {
     fetchItems()
   }, [])
@@ -236,15 +241,22 @@ export default function AdminGachaPage() {
     }
   }
 
-  const handleDelete = async (itemId: string) => {
-    if (!confirm('このアイテムを削除しますか？')) return
-    try {
-      await deleteDoc(doc(db, 'gachaItems', itemId))
-      // Remove from local state instead of refetching
-      setItems(prev => prev.filter(i => i.id !== itemId))
-    } catch (error) {
-      console.error('Error deleting item:', error)
-    }
+  const handleDelete = (itemId: string) => {
+    setConfirmDialog({
+      title: 'アイテム削除',
+      message: 'このアイテムを削除しますか？',
+      variant: 'danger',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        try {
+          await deleteDoc(doc(db, 'gachaItems', itemId))
+          // Remove from local state instead of refetching
+          setItems(prev => prev.filter(i => i.id !== itemId))
+        } catch (error) {
+          console.error('Error deleting item:', error)
+        }
+      },
+    })
   }
 
   const handleSearchUser = async () => {
@@ -355,33 +367,40 @@ export default function AdminGachaPage() {
     }
   }
 
-  const handleClearTickets = async () => {
+  const handleClearTickets = () => {
     if (deductGrade == null || !deductClass || deductStudentNumber == null || deductSubmitting) return
-    if (!confirm('このユーザーの全チケットをクリアしますか？')) return
-    setDeductSubmitting(true)
-    try {
-      const result = await clearGachaTicketsFn({
-        grade: deductGrade,
-        classNum: deductClass,
-        studentNumber: deductStudentNumber,
-        details: deductDetails || undefined,
-      })
-      setMessage({ type: 'success', text: result.data.message })
-      setDeductGrade(null)
-      setDeductClass(null)
-      setDeductStudentNumber(null)
-      setDeductTickets(1)
-      setDeductDetails('')
-      setDeductSearchedUser(null)
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : 'チケットクリアに失敗しました'
-      setMessage({ type: 'error', text: msg })
-    } finally {
-      setDeductSubmitting(false)
-    }
+    setConfirmDialog({
+      title: 'チケットクリア',
+      message: 'このユーザーの全チケットをクリアしますか？',
+      variant: 'danger',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        setDeductSubmitting(true)
+        try {
+          const result = await clearGachaTicketsFn({
+            grade: deductGrade,
+            classNum: deductClass,
+            studentNumber: deductStudentNumber,
+            details: deductDetails || undefined,
+          })
+          setMessage({ type: 'success', text: result.data.message })
+          setDeductGrade(null)
+          setDeductClass(null)
+          setDeductStudentNumber(null)
+          setDeductTickets(1)
+          setDeductDetails('')
+          setDeductSearchedUser(null)
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : 'チケットクリアに失敗しました'
+          setMessage({ type: 'error', text: msg })
+        } finally {
+          setDeductSubmitting(false)
+        }
+      },
+    })
   }
 
-  const handleBulkDistribute = async () => {
+  const handleBulkDistribute = () => {
     if (bulkTickets <= 0 && bulkPoints <= 0) {
       setMessage({ type: 'error', text: 'チケットまたはポイントを指定してください' })
       return
@@ -394,33 +413,39 @@ export default function AdminGachaPage() {
     if (bulkTickets > 0) itemDesc.push(`${bulkTickets}チケット`)
     if (bulkPoints > 0) itemDesc.push(`${bulkPoints}pt`)
 
-    if (!confirm(`${targetDesc}${classDesc}に${itemDesc.join('と')}を配布しますか？`)) return
-
-    setBulkSubmitting(true)
-    setBulkResult(null)
-    try {
-      const result = await bulkDistributeByClassFn({
-        grade: bulkGrade === 'all' ? undefined : bulkGrade,
-        classNames: bulkClasses.length > 0 ? bulkClasses : undefined,
-        tickets: bulkTickets > 0 ? bulkTickets : undefined,
-        points: bulkPoints > 0 ? bulkPoints : undefined,
-        details: bulkDetails || undefined,
-      })
-      setMessage({ type: 'success', text: result.data.message })
-      setBulkResult({
-        successCount: result.data.successCount,
-        totalCount: result.data.totalCount,
-        errors: result.data.errors,
-      })
-      setBulkTickets(1)
-      setBulkPoints(0)
-      setBulkDetails('')
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : '一括配布に失敗しました'
-      setMessage({ type: 'error', text: msg })
-    } finally {
-      setBulkSubmitting(false)
-    }
+    setConfirmDialog({
+      title: '一括配布',
+      message: `${targetDesc}${classDesc}に${itemDesc.join('と')}を配布しますか？`,
+      variant: 'danger',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        setBulkSubmitting(true)
+        setBulkResult(null)
+        try {
+          const result = await bulkDistributeByClassFn({
+            grade: bulkGrade === 'all' ? undefined : bulkGrade,
+            classNames: bulkClasses.length > 0 ? bulkClasses : undefined,
+            tickets: bulkTickets > 0 ? bulkTickets : undefined,
+            points: bulkPoints > 0 ? bulkPoints : undefined,
+            details: bulkDetails || undefined,
+          })
+          setMessage({ type: 'success', text: result.data.message })
+          setBulkResult({
+            successCount: result.data.successCount,
+            totalCount: result.data.totalCount,
+            errors: result.data.errors,
+          })
+          setBulkTickets(1)
+          setBulkPoints(0)
+          setBulkDetails('')
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : '一括配布に失敗しました'
+          setMessage({ type: 'error', text: msg })
+        } finally {
+          setBulkSubmitting(false)
+        }
+      },
+    })
   }
 
   const toggleBulkClass = (className: string) => {
@@ -433,6 +458,15 @@ export default function AdminGachaPage() {
 
   return (
     <div className="min-h-screen bg-hatofes-bg">
+      <ConfirmDialog
+        isOpen={!!confirmDialog}
+        title={confirmDialog?.title || ''}
+        message={confirmDialog?.message || ''}
+        variant={confirmDialog?.variant || 'default'}
+        confirmLabel="実行"
+        onConfirm={() => confirmDialog?.onConfirm()}
+        onCancel={() => setConfirmDialog(null)}
+      />
       {/* Header */}
       <header className="bg-hatofes-dark border-b border-hatofes-gray-lighter px-4 py-4">
         <div className="max-w-4xl mx-auto flex items-center justify-between">

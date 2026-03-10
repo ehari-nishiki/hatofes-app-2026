@@ -1,9 +1,17 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import AppHeader from '@/components/layout/AppHeader'
 import { useAuth } from '@/contexts/AuthContext'
 import { getSurveysByCategory } from '@/lib/surveyService'
 import type { Survey } from '@/types/firestore'
+import {
+  PageBackLink,
+  PageEmptyState,
+  PageHero,
+  PageMetric,
+  PageSection,
+  PageSectionTitle,
+  UserPageShell,
+} from '@/components/layout/UserPageShell'
 
 type SurveyWithStatus = Survey & { id: string; isAnswered: boolean }
 
@@ -29,100 +37,105 @@ export default function MissionsPage() {
     fetchMissions()
   }, [currentUser])
 
-  const availableMissions = missions.filter(m => !m.isAnswered)
-  const completedMissions = missions.filter(m => m.isAnswered)
-
   if (!userData) {
     return (
-      <div className="min-h-screen bg-hatofes-bg flex items-center justify-center">
-        <div className="text-hatofes-white">読み込み中...</div>
+      <div className="flex min-h-screen items-center justify-center bg-[#11161a]">
+        <div className="text-white">読み込み中...</div>
       </div>
     )
   }
 
+  const availableMissions = missions.filter((mission) => !mission.isAnswered)
+  const completedMissions = missions.filter((mission) => mission.isAnswered)
+
   return (
-    <div className="min-h-screen bg-hatofes-bg pb-8">
-      <AppHeader
-        username={userData.username}
-        grade={userData.grade}
-        classNumber={userData.class}
+    <UserPageShell username={userData.username} grade={userData.grade} classNumber={userData.class}>
+      <PageHero
+        eyebrow="Mission Board"
+        title="Mission"
+        description="任意参加のミッションを一覧で見て、挑戦中と達成済みを整理できます。"
+        badge={availableMissions.length > 0 ? <CountBadge count={availableMissions.length} /> : undefined}
+        aside={<PageBackLink />}
       />
 
-      <main className="max-w-lg mx-auto px-4 py-6">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-xl font-bold text-hatofes-white">Mission</h1>
-            <p className="text-xs text-hatofes-gray mt-1">任意参加のミッションです</p>
+      <div className="grid gap-4 xl:grid-cols-[0.72fr_1.28fr]">
+        <PageSection>
+          <PageSectionTitle eyebrow="Summary" title="達成状況" />
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+            <PageMetric label="Open" value={availableMissions.length.toString()} />
+            <PageMetric label="Done" value={completedMissions.length.toString()} tone="soft" />
           </div>
-          {availableMissions.length > 0 && (
-            <span className="notification-badge">{availableMissions.length}</span>
-          )}
+        </PageSection>
+
+        <div className="space-y-4">
+          <PageSection>
+            <PageSectionTitle eyebrow="Challenge" title="挑戦できるミッション" />
+            {loading ? (
+              <PageEmptyState title="ミッションを読み込み中です" />
+            ) : availableMissions.length === 0 ? (
+              <PageEmptyState title="現在挑戦できるミッションはありません" />
+            ) : (
+              <div className="space-y-2">
+                {availableMissions.map((mission) => (
+                  <SurveyRow key={mission.id} survey={mission} href={`/missions/${mission.id}`} />
+                ))}
+              </div>
+            )}
+          </PageSection>
+
+          <PageSection>
+            <PageSectionTitle eyebrow="Archive" title="達成済み" />
+            {loading ? (
+              <PageEmptyState title="ミッションを読み込み中です" />
+            ) : completedMissions.length === 0 ? (
+              <PageEmptyState title="達成済みミッションはまだありません" />
+            ) : (
+              <div className="space-y-2">
+                {completedMissions.map((mission) => (
+                  <SurveyRow key={mission.id} survey={mission} href={`/missions/${mission.id}`} completed />
+                ))}
+              </div>
+            )}
+          </PageSection>
         </div>
+      </div>
+    </UserPageShell>
+  )
+}
 
-        {loading ? (
-          <div className="card">
-            <p className="text-hatofes-gray text-center py-4">読み込み中...</p>
-          </div>
-        ) : missions.length === 0 ? (
-          <div className="card">
-            <p className="text-hatofes-gray text-center py-4">現在ミッションはありません</p>
-          </div>
-        ) : (
-          <>
-            {/* Available Missions */}
-            {availableMissions.length > 0 && (
-              <div className="card mb-6">
-                <h2 className="text-sm font-bold text-hatofes-gray-light mb-4">挑戦できるミッション</h2>
-                <ul className="divide-y divide-hatofes-gray">
-                  {availableMissions.map((mission) => (
-                    <li key={mission.id}>
-                      <Link
-                        to={`/missions/${mission.id}`}
-                        className="flex items-center justify-between py-4 hover:bg-hatofes-dark transition-colors -mx-4 px-4"
-                      >
-                        <div className="flex-1">
-                          <p className="text-hatofes-white text-sm">{mission.title}</p>
-                          {mission.description && (
-                            <p className="text-hatofes-gray text-xs mt-1 line-clamp-1">{mission.description}</p>
-                          )}
-                        </div>
-                        <span className="point-badge">{mission.points}pt</span>
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
+function SurveyRow({
+  survey,
+  href,
+  completed = false,
+}: {
+  survey: SurveyWithStatus
+  href: string
+  completed?: boolean
+}) {
+  return (
+    <Link
+      to={href}
+      className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-[1.1rem] px-4 py-4 transition-colors ${
+        completed ? 'bg-[#0f1418] opacity-70 hover:opacity-100' : 'bg-white/[0.06] hover:bg-white/[0.085]'
+      }`}
+    >
+      <div className="min-w-0">
+        <p className={`truncate text-sm ${completed ? 'text-white/78 line-through' : 'font-medium text-white'}`}>{survey.title}</p>
+        {survey.description ? (
+          <p className="mt-1 line-clamp-1 text-xs text-white/42">{survey.description}</p>
+        ) : null}
+      </div>
+      <span className={`rounded-full px-3 py-1 text-xs font-semibold ${completed ? 'bg-white/[0.06] text-white/58' : 'bg-[#d9e4dc] text-[#11161a]'}`}>
+        +{survey.points}pt
+      </span>
+    </Link>
+  )
+}
 
-            {/* Completed Missions */}
-            {completedMissions.length > 0 && (
-              <div className="card">
-                <h2 className="text-sm font-bold text-hatofes-gray-light mb-4">達成済み</h2>
-                <ul className="divide-y divide-hatofes-gray">
-                  {completedMissions.map((mission) => (
-                    <li key={mission.id} className="py-4 opacity-60">
-                      <div className="flex items-center justify-between">
-                        <div className="flex-1">
-                          <p className="text-hatofes-white text-sm line-through">{mission.title}</p>
-                        </div>
-                        <span className="text-hatofes-gray text-sm">+{mission.points}pt</span>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </>
-        )}
-
-        {/* Back Button */}
-        <Link to="/home" className="block mt-6">
-          <div className="btn-sub w-full py-3 text-center">
-            ホームに戻る
-          </div>
-        </Link>
-      </main>
-    </div>
+function CountBadge({ count }: { count: number }) {
+  return (
+    <span className="rounded-full bg-[#e24d4d] px-3 py-1 text-xs font-semibold text-white">
+      {count} open
+    </span>
   )
 }

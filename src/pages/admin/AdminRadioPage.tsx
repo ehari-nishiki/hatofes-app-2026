@@ -13,6 +13,8 @@ import {
   Timestamp,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { Toast, useToast } from '@/components/ui/Toast'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { useAuth } from '@/contexts/AuthContext'
 import { Spinner } from '@/components/ui/Spinner'
 import type { RadioConfig, RadioProgram, RadioRequest } from '@/types/firestore'
@@ -32,6 +34,10 @@ export default function AdminRadioPage() {
   const [requests, setRequests] = useState<RequestWithId[]>([])
   const [loading, setLoading] = useState(true)
   const [configSaving, setConfigSaving] = useState(false)
+  const { toast, showToast, hideToast } = useToast()
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string; message: string; onConfirm: () => void
+  } | null>(null)
 
   // Program form
   const [showProgramForm, setShowProgramForm] = useState(false)
@@ -103,10 +109,10 @@ export default function AdminRadioPage() {
     setConfigSaving(true)
     try {
       await setDoc(doc(db, 'config', 'radio'), config)
-      alert('設定を保存しました')
+      showToast('設定を保存しました', 'success')
     } catch (error) {
       console.error('Error saving config:', error)
-      alert('保存に失敗しました')
+      showToast('保存に失敗しました', 'error')
     } finally {
       setConfigSaving(false)
     }
@@ -115,7 +121,7 @@ export default function AdminRadioPage() {
   // Save program
   const handleSaveProgram = async () => {
     if (!programForm.title || !programForm.scheduledStart || !programForm.scheduledEnd) {
-      alert('必須項目を入力してください')
+      showToast('必須項目を入力してください', 'error')
       return
     }
 
@@ -156,10 +162,10 @@ export default function AdminRadioPage() {
         scheduledStart: '',
         scheduledEnd: '',
       })
-      alert(editingProgramId ? '番組を更新しました' : '番組を追加しました')
+      showToast(editingProgramId ? '番組を更新しました' : '番組を追加しました', 'success')
     } catch (error) {
       console.error('Error saving program:', error)
-      alert('保存に失敗しました')
+      showToast('保存に失敗しました', 'error')
     } finally {
       setProgramSaving(false)
     }
@@ -179,17 +185,22 @@ export default function AdminRadioPage() {
   }
 
   // Delete program
-  const handleDeleteProgram = async (programId: string) => {
-    if (!confirm('この番組を削除しますか？')) return
-
-    try {
-      await deleteDoc(doc(db, 'radioPrograms', programId))
-      setPrograms((prev) => prev.filter((p) => p.id !== programId))
-      alert('番組を削除しました')
-    } catch (error) {
-      console.error('Error deleting program:', error)
-      alert('削除に失敗しました')
-    }
+  const handleDeleteProgram = (programId: string) => {
+    setConfirmDialog({
+      title: '番組削除',
+      message: 'この番組を削除しますか？',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        try {
+          await deleteDoc(doc(db, 'radioPrograms', programId))
+          setPrograms((prev) => prev.filter((p) => p.id !== programId))
+          showToast('番組を削除しました', 'success')
+        } catch (error) {
+          console.error('Error deleting program:', error)
+          showToast('削除に失敗しました', 'error')
+        }
+      },
+    })
   }
 
   // Update request status
@@ -204,7 +215,7 @@ export default function AdminRadioPage() {
       )
     } catch (error) {
       console.error('Error updating request:', error)
-      alert('更新に失敗しました')
+      showToast('更新に失敗しました', 'error')
     }
   }
 
@@ -237,6 +248,16 @@ export default function AdminRadioPage() {
 
   return (
     <div className="min-h-screen bg-hatofes-bg">
+      {toast && <Toast message={toast.message} type={toast.type} onClose={hideToast} />}
+      <ConfirmDialog
+        isOpen={!!confirmDialog}
+        title={confirmDialog?.title || ''}
+        message={confirmDialog?.message || ''}
+        variant="danger"
+        confirmLabel="削除"
+        onConfirm={() => confirmDialog?.onConfirm()}
+        onCancel={() => setConfirmDialog(null)}
+      />
       {/* Header */}
       <header className="bg-hatofes-dark border-b border-hatofes-gray-lighter px-4 py-4">
         <div className="max-w-4xl mx-auto flex items-center justify-between">

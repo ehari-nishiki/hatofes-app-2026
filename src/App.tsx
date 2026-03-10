@@ -1,4 +1,5 @@
 import { Routes, Route } from 'react-router-dom'
+import { lazy, Suspense } from 'react'
 
 // Public pages
 import LandingPage from './pages/public/LandingPage'
@@ -27,6 +28,11 @@ import BoothListPage from './pages/user/BoothListPage'
 import EventSchedulePage from './pages/user/EventSchedulePage'
 import RadioPage from './pages/user/RadioPage'
 
+// Lazy-loaded new pages
+const GachaCollectionPage = lazy(() => import('./pages/user/GachaCollectionPage'))
+const StampRallyPage = lazy(() => import('./pages/user/StampRallyPage'))
+const LiveChallengePage = lazy(() => import('./pages/user/LiveChallengePage'))
+
 // Admin pages
 import AdminDashboard from './pages/admin/AdminDashboard'
 import AdminPointsPage from './pages/admin/AdminPointsPage'
@@ -44,13 +50,21 @@ import ExecutiveDashboard from './pages/executive/ExecutiveDashboard'
 import { ProtectedRoute } from './components/auth/ProtectedRoute'
 import { StaffRoute } from './components/auth/StaffRoute'
 
+// Layout
+import PageTransition from './components/layout/PageTransition'
+
 // Staff pages
 import StaffDashboard from './pages/admin/StaffDashboard'
 
+const LazyFallback = () => (
+  <div className="min-h-screen bg-hatofes-bg flex items-center justify-center">
+    <div className="text-hatofes-white">読み込み中...</div>
+  </div>
+)
 
 function App() {
   return (
-    <>
+    <PageTransition>
       <Routes>
         {/* Public routes */}
         <Route path="/" element={<LandingPage />} />
@@ -82,6 +96,9 @@ function App() {
         <Route path="/events" element={<ProtectedRoute><EventSchedulePage /></ProtectedRoute>} />
         <Route path="/radio" element={<ProtectedRoute><RadioPage /></ProtectedRoute>} />
         <Route path="/executive" element={<ProtectedRoute><ExecutiveDashboard /></ProtectedRoute>} />
+        <Route path="/gacha/collection" element={<ProtectedRoute><Suspense fallback={<LazyFallback />}><GachaCollectionPage /></Suspense></ProtectedRoute>} />
+        <Route path="/stamp-rally" element={<ProtectedRoute><Suspense fallback={<LazyFallback />}><StampRallyPage /></Suspense></ProtectedRoute>} />
+        <Route path="/live-challenge" element={<ProtectedRoute><Suspense fallback={<LazyFallback />}><LiveChallengePage /></Suspense></ProtectedRoute>} />
 
         {/* Admin routes - Protected by StaffRoute with different access levels */}
         <Route path="/admin" element={<StaffRoute staffAllowed={false}><AdminDashboard /></StaffRoute>} />
@@ -96,7 +113,7 @@ function App() {
         <Route path="/admin/events" element={<StaffRoute staffAllowed={true}><AdminEventsPage /></StaffRoute>} />
         <Route path="/admin/radio" element={<StaffRoute staffAllowed={true}><AdminRadioPage /></StaffRoute>} />
       </Routes>
-    </>
+    </PageTransition>
   )
 }
 

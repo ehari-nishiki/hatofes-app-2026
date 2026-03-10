@@ -11,6 +11,7 @@ export interface User {
   studentNumber?: number; // 名簿番号, optional for teachers/staff
   username: string;
   realName?: string; // staff/admin用の本名（通知・アンケートで表示）
+  profileImageUrl?: string; // プロフィール画像URL (Cloudflare R2)
   role: UserRole;
   department?: string; // 係（権限なし、表示のみ）例: 広報係、会計係など
   totalPoints: number;
@@ -24,6 +25,12 @@ export interface User {
   gachaTickets?: number; // default: 0
   // Survey optimization
   answeredSurveyIds?: string[]; // Array of survey IDs the user has answered (cached for performance)
+  // Login streak
+  loginStreak?: number; // Current consecutive login days
+  lastStreakDate?: string; // YYYY-MM-DD of last streak update
+  // Badge system
+  badges?: string[]; // Array of badge IDs earned
+  recentPointHistory?: PointHistorySummary[]; // Cached recent point history for low-cost UI reads
 }
 
 // Feedback document
@@ -45,6 +52,14 @@ export interface PointHistory {
   reason: PointReason;
   details: string;
   grantedBy?: string; // User ID of admin who granted points
+  createdAt: Timestamp;
+}
+
+export interface PointHistorySummary {
+  id: string;
+  points: number;
+  reason: PointReason;
+  details: string;
   createdAt: Timestamp;
 }
 
@@ -130,11 +145,15 @@ export interface Notification {
   createdAt: Timestamp;
   createdBy?: string; // User ID of creator
   senderName?: string; // Display name of sender (realName or username)
+  senderRole?: UserRole;
+  senderDepartment?: string;
+  senderProfileImageUrl?: string;
   readCount: number; // Count of users who have read (replaces readBy array for cost optimization)
   readBy?: string[]; // DEPRECATED: Legacy field, use readStatus subcollection instead
   imageUrl?: string;
   points?: number; // 通知を開いた時に付与するポイント（0または未設定 = 付与なし）
   pointsReceivedBy?: string[]; // ポイントを受け取ったユーザーIDの配列
+  isImportant?: boolean; // ホームの重要なお知らせに優先表示
 }
 
 // Notification read status (stored in subcollection: notifications/{notifId}/readStatus/{userId})
@@ -186,6 +205,7 @@ export interface TetrisScore {
   id?: string;
   userId: string;
   username: string;
+  profileImageUrl?: string; // プロフィール画像URL
   grade?: number;
   class?: string;
   highScore: number; // 最高スコア
@@ -304,6 +324,55 @@ export interface ExecutiveQuestion {
   likes: number;
   likedBy: string[];
   status: 'pending' | 'answered';
+}
+
+// Notification reactions (stored in notifications/{notifId}/reactions/{userId})
+export interface NotificationReaction {
+  emoji: string;
+  reactedAt: Timestamp;
+}
+
+// Booth review
+export interface BoothReview {
+  id?: string;
+  boothId: string;
+  userId: string;
+  username: string;
+  rating: number; // 1-5
+  comment?: string;
+  createdAt: Timestamp;
+}
+
+// Live challenge (class vs class time attack)
+export interface LiveChallenge {
+  id?: string;
+  title: string;
+  description?: string;
+  startTime: Timestamp;
+  endTime: Timestamp;
+  status: 'upcoming' | 'active' | 'ended';
+  bonusPoints?: number; // Points for winning class
+  createdBy: string;
+}
+
+// Live challenge class score (subcollection: liveChallenges/{id}/classScores/{classId})
+export interface LiveChallengeClassScore {
+  classId: string;
+  grade: number;
+  className: string;
+  totalPoints: number;
+  memberCount: number;
+}
+
+// Tetris daily challenge
+export interface TetrisDailyChallenge {
+  id?: string;
+  date: string; // YYYY-MM-DD
+  targetType: 'lines' | 'score';
+  targetValue: number;
+  timeLimit?: number; // seconds
+  bonusPoints: number;
+  description: string;
 }
 
 // Extended question types for surveys

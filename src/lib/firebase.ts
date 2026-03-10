@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, setPersistence, browserLocalPersistence, browserSessionPersistence } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
+import { getFunctions } from 'firebase/functions';
 
 // Firebase configuration
 const firebaseConfig = {
@@ -30,6 +31,9 @@ setPersistence(auth, browserLocalPersistence).catch((error) => {
 
 // Initialize Cloud Firestore and get a reference to the service
 export const db = getFirestore(app);
+
+// Initialize Cloud Functions
+export const functions = getFunctions(app);
 
 // Configure Google Auth Provider
 export const googleProvider = new GoogleAuthProvider();

@@ -24,6 +24,25 @@ export default {
             orange: 'var(--color-accent-orange)',
           },
         },
+        // Status colors (semantic)
+        status: {
+          success: 'var(--color-status-success)',
+          error: 'var(--color-status-error)',
+          warning: 'var(--color-status-warning)',
+          info: 'var(--color-status-info)',
+        },
+        // Feature accent colors
+        feature: {
+          radio: 'var(--color-feature-radio)',
+          tetris: 'var(--color-feature-tetris)',
+          qa: 'var(--color-feature-qa)',
+          stamp: 'var(--color-feature-stamp)',
+          challenge: 'var(--color-feature-challenge)',
+        },
+        // Rarity colors (gacha)
+        rarity: {
+          epic: 'var(--color-rarity-epic)',
+        },
       },
       fontFamily: {
         sans: [

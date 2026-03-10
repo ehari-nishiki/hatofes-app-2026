@@ -9,13 +9,15 @@ interface ErrorStats {
   [key: string]: number
 }
 
+type TimeRange = '1h' | '24h' | '7d' | 'all'
+
 export default function AuthErrorsPage() {
   const { userData } = useAuth()
   const [errors, setErrors] = useState<(AuthErrorLog & { id: string })[]>([])
   const [errorStats, setErrorStats] = useState<ErrorStats>({})
   const [loading, setLoading] = useState(true)
   const [selectedErrorCode, setSelectedErrorCode] = useState<string>('all')
-  const [timeRange, setTimeRange] = useState<'1h' | '24h' | '7d' | 'all'>('24h')
+  const [timeRange, setTimeRange] = useState<TimeRange>('24h')
 
   useEffect(() => {
     const fetchErrors = async () => {
@@ -157,7 +159,7 @@ export default function AuthErrorsPage() {
               <label className="block text-sm text-hatofes-gray-light mb-2">期間</label>
               <select
                 value={timeRange}
-                onChange={(e) => setTimeRange(e.target.value as any)}
+                onChange={(e) => setTimeRange(e.target.value as TimeRange)}
                 className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white"
               >
                 <option value="1h">過去1時間</option>

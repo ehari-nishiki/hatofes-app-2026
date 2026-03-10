@@ -1,34 +1,35 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
 import { doc, updateDoc, addDoc, collection } from 'firebase/firestore'
 import { getFunctions, httpsCallable } from 'firebase/functions'
 import { db } from '@/lib/firebase'
 import app from '@/lib/firebase'
-import AppHeader from '@/components/layout/AppHeader'
 import { useAuth } from '@/contexts/AuthContext'
-import { useTheme } from '@/contexts/ThemeContext'
 import { Spinner } from '@/components/ui/Spinner'
 import { wordListA, wordListB, wordListC } from '@/mocks/wordLists'
+import {
+  PageBackLink,
+  PageHero,
+  PageSection,
+  PageSectionTitle,
+  UserPageShell,
+} from '@/components/layout/UserPageShell'
 
-const MAX_USERNAME_CHANGES = 3;
-const functions = getFunctions(app);
+const MAX_USERNAME_CHANGES = 3
+const functions = getFunctions(app)
 const changeUsernameFn = httpsCallable<
   { word1: string; word2: string; word3: string },
   { success: boolean; message: string; remainingChanges: number }
->(functions, 'changeUsername');
+>(functions, 'changeUsername')
 
 type RenameStep = 'idle' | 'word1' | 'word2' | 'word3' | 'confirm' | 'submitting'
 
 export default function SettingsPage() {
   const { currentUser, userData, refreshUserData } = useAuth()
-  const { theme, toggleTheme } = useTheme()
 
   const [notificationsEnabled, setNotificationsEnabled] = useState(true)
   const [feedbackMessage, setFeedbackMessage] = useState('')
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false)
-
-  // Rename flow state
   const [renameStep, setRenameStep] = useState<RenameStep>('idle')
   const [selectedWord1, setSelectedWord1] = useState('')
   const [selectedWord2, setSelectedWord2] = useState('')
@@ -38,6 +39,15 @@ export default function SettingsPage() {
     if (!userData) return
     setNotificationsEnabled(userData.notificationsEnabled ?? true)
   }, [userData])
+
+  useEffect(() => {
+    if (renameStep === 'idle') return
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && renameStep !== 'submitting') handleCancelRename()
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [renameStep])
 
   const usernameChangeCount = userData?.usernameChangeCount ?? 0
   const remainingChanges = MAX_USERNAME_CHANGES - usernameChangeCount
@@ -72,7 +82,7 @@ export default function SettingsPage() {
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'ユーザーネーム変更に失敗しました'
       setMessage({ type: 'error', text: msg })
-      setRenameStep('confirm') // go back to confirm so they can retry or cancel
+      setRenameStep('confirm')
     }
   }
 
@@ -106,13 +116,12 @@ export default function SettingsPage() {
 
   if (!userData) {
     return (
-      <div className="min-h-screen theme-bg flex items-center justify-center">
+      <div className="flex min-h-screen items-center justify-center bg-[#11161a]">
         <Spinner size="lg" />
       </div>
     )
   }
 
-  // ─── Word selection modal overlay ───
   const renderWordModal = () => {
     let title = ''
     let words: string[] = []
@@ -134,32 +143,34 @@ export default function SettingsPage() {
 
     if (renameStep === 'idle') return null
 
-    // Confirm screen
     if (renameStep === 'confirm' || renameStep === 'submitting') {
       return (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
-          <div className="bg-hatofes-dark rounded-2xl p-6 w-full max-w-sm border border-hatofes-gray text-center">
-            <p className="text-hatofes-gray text-sm mb-2">新しいユーザーネーム</p>
-            <p className="text-2xl font-bold text-gradient mb-6">{previewUsername}</p>
-            <div className="flex gap-2 text-xs text-hatofes-gray justify-center mb-6">
-              <span className="bg-hatofes-bg px-2 py-1 rounded">{selectedWord1}</span>
-              <span>＋</span>
-              <span className="bg-hatofes-bg px-2 py-1 rounded">{selectedWord2}</span>
-              <span>＋</span>
-              <span className="bg-hatofes-bg px-2 py-1 rounded">{selectedWord3}</span>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          onClick={(e) => { if (e.target === e.currentTarget && renameStep !== 'submitting') handleCancelRename() }}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-sm rounded-[1.4rem] border border-white/8 bg-[#161d22] p-6 text-center text-white shadow-[0_24px_80px_rgba(0,0,0,0.4)]">
+            <p className="text-sm text-white/52">新しいユーザーネーム</p>
+            <p className="mt-2 text-2xl font-display font-black text-white">{previewUsername}</p>
+            <div className="mt-5 flex flex-wrap justify-center gap-2 text-xs text-white/56">
+              <span className="rounded-full bg-black/20 px-2.5 py-1">{selectedWord1}</span>
+              <span className="rounded-full bg-black/20 px-2.5 py-1">{selectedWord2}</span>
+              <span className="rounded-full bg-black/20 px-2.5 py-1">{selectedWord3}</span>
             </div>
-            <div className="flex gap-2">
+            <div className="mt-6 grid grid-cols-2 gap-2">
               <button
                 onClick={handleCancelRename}
                 disabled={renameStep === 'submitting'}
-                className="btn-sub flex-1 py-2 disabled:opacity-50"
+                className="rounded-[0.95rem] bg-white/[0.06] px-4 py-3 text-sm font-medium text-white/78 disabled:opacity-50"
               >
                 キャンセル
               </button>
               <button
                 onClick={handleConfirmRename}
                 disabled={renameStep === 'submitting'}
-                className="btn-main flex-1 py-2 disabled:opacity-50"
+                className="rounded-[0.95rem] bg-[linear-gradient(135deg,#FFC300,#FF7A18)] px-4 py-3 text-sm font-semibold text-[#11161a] disabled:opacity-50"
               >
                 {renameStep === 'submitting' ? <Spinner size="sm" className="mx-auto" /> : 'この名前にする'}
               </button>
@@ -169,39 +180,40 @@ export default function SettingsPage() {
       )
     }
 
-    // Word selection screen
     return (
-      <div className="fixed inset-0 bg-black/80 flex flex-col items-center justify-center z-50 p-4">
-        <div className="bg-hatofes-dark rounded-2xl p-6 w-full max-w-md border border-hatofes-gray">
-          {/* Progress dots */}
-          <div className="flex justify-center gap-2 mb-4">
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+        onClick={(e) => { if (e.target === e.currentTarget) handleCancelRename() }}
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="w-full max-w-2xl rounded-[1.4rem] border border-white/8 bg-[#161d22] p-5 text-white shadow-[0_24px_80px_rgba(0,0,0,0.4)]">
+          <div className="mb-5 flex justify-center gap-2">
             {(['word1', 'word2', 'word3'] as const).map((step) => {
               const steps = ['word1', 'word2', 'word3']
               const isFilled = steps.indexOf(step) <= steps.indexOf(renameStep)
               return (
                 <div
                   key={step}
-                  className={`w-2 h-2 rounded-full transition-colors ${isFilled ? 'bg-hatofes-accent-yellow' : 'bg-hatofes-gray'}`}
+                  className={`h-2 w-10 rounded-full ${isFilled ? 'bg-[linear-gradient(135deg,#FFC300,#FF7A18)]' : 'bg-white/10'}`}
                 />
               )
             })}
           </div>
 
-          <h2 className="text-lg font-bold text-hatofes-white text-center mb-1">{title}</h2>
-
-          {/* Show already-selected words */}
-          <div className="flex justify-center gap-1 mb-4 h-6">
-            {selectedWord1 && <span className="text-xs bg-hatofes-accent-yellow/20 text-hatofes-accent-yellow px-2 py-0.5 rounded">{selectedWord1}</span>}
-            {selectedWord2 && <span className="text-xs bg-hatofes-accent-yellow/20 text-hatofes-accent-yellow px-2 py-0.5 rounded">{selectedWord2}</span>}
+          <h2 className="text-center text-lg font-semibold">{title}</h2>
+          <div className="mt-3 flex min-h-6 flex-wrap justify-center gap-2">
+            {selectedWord1 ? <span className="rounded-full bg-white/[0.06] px-2.5 py-1 text-xs">{selectedWord1}</span> : null}
+            {selectedWord2 ? <span className="rounded-full bg-white/[0.06] px-2.5 py-1 text-xs">{selectedWord2}</span> : null}
           </div>
 
-          <div className="max-h-[45vh] overflow-y-auto px-1">
+          <div className="mt-5 max-h-[45vh] overflow-y-auto">
             <div className="flex flex-wrap justify-center gap-2">
-              {words.map((word, idx) => (
+              {words.map((word) => (
                 <button
-                  key={idx}
+                  key={word}
                   onClick={() => onSelect(word)}
-                  className="bg-hatofes-bg text-hatofes-white px-4 py-2 rounded-full text-sm font-medium border border-hatofes-gray hover:border-hatofes-accent-yellow hover:bg-hatofes-gray-lighter transition-all active:scale-95"
+                  className="rounded-full bg-black/20 px-4 py-2 text-sm font-medium text-white/82 transition-colors hover:bg-white/[0.08]"
                 >
                   {word}
                 </button>
@@ -209,7 +221,7 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <button onClick={handleCancelRename} className="btn-sub w-full py-2 mt-4 text-sm">
+          <button onClick={handleCancelRename} className="mt-5 w-full rounded-[0.95rem] bg-white/[0.06] px-4 py-3 text-sm font-medium text-white/78">
             キャンセル
           </button>
         </div>
@@ -218,106 +230,83 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="min-h-screen theme-bg pb-8">
-      {/* Word selection / confirm modal */}
+    <UserPageShell username={userData.username} grade={userData.grade} classNumber={userData.class} showThemeToggle>
       {renderWordModal()}
 
-      <AppHeader
-        username={userData.username}
-        grade={userData.grade}
-        classNumber={userData.class}
+      <PageHero
+        eyebrow="Settings"
+        title="アプリ設定"
+        description="通知、ユーザーネーム変更、運営へのフィードバックをここで管理します。"
+        aside={<PageBackLink to="/profile" label="プロフィールに戻る" />}
       />
 
-      <main className="max-w-lg mx-auto px-4 py-6 space-y-6">
-        {/* Toast message */}
-        {message && (
-          <div className={`p-3 rounded-lg text-sm ${message.type === 'success' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-            {message.text}
-          </div>
-        )}
+      {message ? (
+        <div className={`mb-4 rounded-[1rem] px-4 py-3 text-sm ${message.type === 'success' ? 'bg-emerald-500/14 text-emerald-300' : 'bg-red-500/14 text-red-300'}`}>
+          {message.text}
+        </div>
+      ) : null}
 
-        {/* Section 1: 通知設定 */}
-        <section className="card">
-          <h2 className="text-lg font-bold text-hatofes-white mb-4">通知設定</h2>
-          <div className="flex items-center justify-between">
-            <span className="text-hatofes-white">通知を受け取る</span>
-            <button
-              onClick={handleToggleNotifications}
-              className={`relative w-12 h-6 rounded-full transition-colors ${notificationsEnabled ? 'bg-hatofes-accent-yellow' : 'bg-hatofes-gray'}`}
-            >
-              <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${notificationsEnabled ? 'translate-x-6' : 'translate-x-0'}`} />
-            </button>
-          </div>
-        </section>
-
-        {/* Section 2: 表示設定 */}
-        <section className="card">
-          <h2 className="text-lg font-bold text-hatofes-white mb-4">表示設定</h2>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-xl">{theme === 'dark' ? '🌙' : '☀️'}</span>
-              <span className="text-hatofes-white">
-                {theme === 'dark' ? 'ダークモード' : 'ライトモード'}
-              </span>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <PageSection>
+          <PageSectionTitle eyebrow="Notifications" title="通知設定" />
+          <div className="flex items-center justify-between gap-4 rounded-[1rem] bg-black/18 px-4 py-4">
+            <div>
+              <p className="text-sm font-medium text-white">通知を受け取る</p>
+              <p className="mt-1 text-xs text-white/46">重要なお知らせや更新情報を受信します。</p>
             </div>
             <button
-              onClick={toggleTheme}
-              className={`relative w-12 h-6 rounded-full transition-colors ${theme === 'light' ? 'bg-hatofes-accent-yellow' : 'bg-hatofes-gray'}`}
+              onClick={handleToggleNotifications}
+              className={`relative h-7 w-14 rounded-full transition-colors ${notificationsEnabled ? 'bg-[linear-gradient(135deg,#FFC300,#FF7A18)]' : 'bg-white/12'}`}
             >
-              <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${theme === 'light' ? 'translate-x-6' : 'translate-x-0'}`} />
+              <span className={`absolute top-1 left-1 h-5 w-5 rounded-full bg-white shadow transition-transform ${notificationsEnabled ? 'translate-x-7' : 'translate-x-0'}`} />
             </button>
           </div>
-        </section>
+        </PageSection>
 
-        {/* Section 3: 表示名変更 */}
-        <section className="card">
-          <h2 className="text-lg font-bold text-hatofes-white mb-2">表示名変更</h2>
-          <div className="flex items-center gap-3 mb-3">
-            <span className="text-hatofes-white font-bold text-lg">{userData.username}</span>
-            <span className={`text-xs px-2 py-0.5 rounded-full ${remainingChanges > 0 ? 'bg-hatofes-accent-yellow/20 text-hatofes-accent-yellow' : 'bg-red-500/20 text-red-400'}`}>
-              残り{remainingChanges}回
-            </span>
+        <PageSection>
+          <PageSectionTitle eyebrow="Name" title="表示名変更" />
+          <div className="rounded-[1rem] bg-black/18 px-4 py-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xl font-bold text-white">{userData.username}</span>
+              <span className={`rounded-full px-2.5 py-1 text-xs ${remainingChanges > 0 ? 'bg-white/[0.08] text-white/72' : 'bg-red-500/16 text-red-300'}`}>
+                残り {remainingChanges} 回
+              </span>
+            </div>
+            <p className="mt-3 text-sm text-white/52">「食材 + 食材 + 料理」の組み合わせで改名できます。</p>
+            {remainingChanges > 0 ? (
+              <button
+                onClick={() => setRenameStep('word1')}
+                className="mt-4 rounded-[0.95rem] bg-[linear-gradient(135deg,#FFC300,#FF7A18)] px-4 py-3 text-sm font-semibold text-[#11161a]"
+              >
+                表示名を変更する
+              </button>
+            ) : (
+              <p className="mt-4 text-sm text-red-300">変更可能な回数が残っていません。</p>
+            )}
           </div>
-          <p className="text-xs text-hatofes-gray mb-3">登録時と同じ「食材＋食材＋料理」の組み合わせで改名できます</p>
-          {remainingChanges > 0 ? (
-            <button
-              onClick={() => setRenameStep('word1')}
-              className="btn-main w-full py-2"
-            >
-              表示名を変更する
-            </button>
-          ) : (
-            <p className="text-xs text-red-400">変更可能な回数が残っていません</p>
-          )}
-        </section>
+        </PageSection>
+      </div>
 
-        {/* Section 4: 運営への要望 */}
-        <section className="card">
-          <h2 className="text-lg font-bold text-hatofes-white mb-4">運営への要望</h2>
-          <textarea
-            value={feedbackMessage}
-            onChange={e => setFeedbackMessage(e.target.value)}
-            placeholder="要望やご意見をお聞かせください"
-            disabled={feedbackSubmitting}
-            rows={4}
-            className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white placeholder-hatofes-gray disabled:opacity-50 resize-none focus:outline-none focus:border-hatofes-accent-yellow transition-colors"
-          />
+      <PageSection className="mt-4">
+        <PageSectionTitle eyebrow="Feedback" title="運営への要望" />
+        <textarea
+          value={feedbackMessage}
+          onChange={e => setFeedbackMessage(e.target.value)}
+          placeholder="要望や気づいた点を書いてください"
+          disabled={feedbackSubmitting}
+          rows={5}
+          className="w-full resize-none rounded-[1rem] bg-black/20 px-4 py-3 text-white placeholder:text-white/28 focus:outline-none"
+        />
+        <div className="mt-3 flex justify-end">
           <button
             onClick={handleSubmitFeedback}
             disabled={!feedbackMessage.trim() || feedbackSubmitting}
-            className="btn-main w-full py-2 mt-3 disabled:opacity-50"
+            className="rounded-[0.95rem] bg-[linear-gradient(135deg,#FFC300,#FF7A18)] px-5 py-3 text-sm font-semibold text-[#11161a] disabled:opacity-50"
           >
             {feedbackSubmitting ? <Spinner size="sm" className="mx-auto" /> : '送信'}
           </button>
-        </section>
-
-        {/* Back Button */}
-        <Link to="/profile" className="block">
-          <div className="btn-sub w-full py-3 text-center">
-            プロフィールに戻る
-          </div>
-        </Link>
-      </main>
-    </div>
+        </div>
+      </PageSection>
+    </UserPageShell>
   )
 }

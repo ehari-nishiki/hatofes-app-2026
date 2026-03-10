@@ -14,11 +14,15 @@ import {
   deleteDoc,
   arrayUnion,
 } from 'firebase/firestore'
+import { getFunctions, httpsCallable } from 'firebase/functions'
 import { db } from '@/lib/firebase'
+import app from '@/lib/firebase'
 import { useAuth } from '@/contexts/AuthContext'
 import { Spinner } from '@/components/ui/Spinner'
 import AppHeader from '@/components/layout/AppHeader'
 import { QAIcon } from '@/components/ui/Icon'
+import { Toast, useToast } from '@/components/ui/Toast'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import type { ExecutiveConfig } from '@/types/firestore'
 
 interface Answer {
@@ -48,6 +52,12 @@ interface Question {
   status: 'pending' | 'answered'
 }
 
+const functions = getFunctions(app)
+const toggleExecutiveQALikeFn = httpsCallable<
+  { questionId: string },
+  { success: boolean; liked: boolean; likes: number }
+>(functions, 'toggleExecutiveQALike')
+
 export default function ExecutiveDashboard() {
   const { currentUser, userData } = useAuth()
   const [loading, setLoading] = useState(true)
@@ -60,6 +70,10 @@ export default function ExecutiveDashboard() {
   const [answeringId, setAnsweringId] = useState<string | null>(null)
   const [editingAnswer, setEditingAnswer] = useState<{ questionId: string; answerId: string; text: string } | null>(null)
   const [executiveNames, setExecutiveNames] = useState<string[]>([])
+  const { toast, showToast, hideToast } = useToast()
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string; message: string; variant: 'default' | 'danger'; onConfirm: () => void
+  } | null>(null)
 
   // Check if user is executive
   useEffect(() => {
@@ -130,7 +144,7 @@ export default function ExecutiveDashboard() {
       setNewQuestion('')
     } catch (error) {
       console.error('Error submitting question:', error)
-      alert('質問の送信に失敗しました')
+      showToast('質問の送信に失敗しました', 'error')
     } finally {
       setSubmitting(false)
     }
@@ -157,7 +171,7 @@ export default function ExecutiveDashboard() {
       setAnsweringId(null)
     } catch (error) {
       console.error('Error answering question:', error)
-      alert('回答の送信に失敗しました')
+      showToast('回答の送信に失敗しました', 'error')
     }
   }
 
@@ -182,45 +196,40 @@ export default function ExecutiveDashboard() {
       setEditingAnswer(null)
     } catch (error) {
       console.error('Error editing answer:', error)
-      alert('回答の編集に失敗しました')
+      showToast('回答の編集に失敗しました', 'error')
     }
   }
 
   // Delete answer (executives only)
-  const handleDeleteAnswer = async (questionId: string, answerId: string) => {
-    if (!isExecutive || !confirm('この回答を削除しますか？')) return
-
-    const question = questions.find(q => q.id === questionId)
-    if (!question) return
-
-    const updatedAnswers = (question.answers || []).filter(a => a.id !== answerId)
-
-    try {
-      await updateDoc(doc(db, 'executiveQA', questionId), {
-        answers: updatedAnswers,
-        status: updatedAnswers.length > 0 ? 'answered' : 'pending',
-      })
-    } catch (error) {
-      console.error('Error deleting answer:', error)
-    }
+  const handleDeleteAnswer = (questionId: string, answerId: string) => {
+    if (!isExecutive) return
+    setConfirmDialog({
+      title: '回答を削除',
+      message: 'この回答を削除しますか？',
+      variant: 'danger',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        const question = questions.find(q => q.id === questionId)
+        if (!question) return
+        const updatedAnswers = (question.answers || []).filter(a => a.id !== answerId)
+        try {
+          await updateDoc(doc(db, 'executiveQA', questionId), {
+            answers: updatedAnswers,
+            status: updatedAnswers.length > 0 ? 'answered' : 'pending',
+          })
+        } catch (error) {
+          console.error('Error deleting answer:', error)
+        }
+      },
+    })
   }
 
   // Like a question
   const handleLike = async (questionId: string) => {
     if (!currentUser) return
 
-    const question = questions.find(q => q.id === questionId)
-    if (!question) return
-
-    const hasLiked = question.likedBy.includes(currentUser.uid)
-
     try {
-      await updateDoc(doc(db, 'executiveQA', questionId), {
-        likes: hasLiked ? question.likes - 1 : question.likes + 1,
-        likedBy: hasLiked
-          ? question.likedBy.filter(id => id !== currentUser.uid)
-          : [...question.likedBy, currentUser.uid],
-      })
+      await toggleExecutiveQALikeFn({ questionId })
     } catch (error) {
       console.error('Error liking question:', error)
     }
@@ -240,14 +249,21 @@ export default function ExecutiveDashboard() {
   }
 
   // Delete question (executives only)
-  const handleDelete = async (questionId: string) => {
-    if (!isExecutive || !confirm('この質問を削除しますか？')) return
-
-    try {
-      await deleteDoc(doc(db, 'executiveQA', questionId))
-    } catch (error) {
-      console.error('Error deleting question:', error)
-    }
+  const handleDelete = (questionId: string) => {
+    if (!isExecutive) return
+    setConfirmDialog({
+      title: '質問を削除',
+      message: 'この質問を削除しますか？この操作は取り消せません。',
+      variant: 'danger',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        try {
+          await deleteDoc(doc(db, 'executiveQA', questionId))
+        } catch (error) {
+          console.error('Error deleting question:', error)
+        }
+      },
+    })
   }
 
   const answeredQuestions = questions.filter(q => q.status === 'answered')
@@ -275,6 +291,16 @@ export default function ExecutiveDashboard() {
 
   return (
     <div className="min-h-screen bg-hatofes-bg pb-20">
+      {toast && <Toast message={toast.message} type={toast.type} onClose={hideToast} />}
+      <ConfirmDialog
+        isOpen={!!confirmDialog}
+        title={confirmDialog?.title || ''}
+        message={confirmDialog?.message || ''}
+        variant={confirmDialog?.variant || 'default'}
+        confirmLabel="削除"
+        onConfirm={() => confirmDialog?.onConfirm()}
+        onCancel={() => setConfirmDialog(null)}
+      />
       <AppHeader
         username={userData?.username || ''}
         grade={userData?.grade || 1}

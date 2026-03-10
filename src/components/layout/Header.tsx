@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 interface HeaderProps {
   showLoginButton?: boolean
@@ -7,6 +7,16 @@ interface HeaderProps {
 
 export default function Header({ showLoginButton = true }: HeaderProps) {
   const [isMenuOpen, setIsMenuOpen] = useState(false)
+
+  // Close menu on Escape key
+  useEffect(() => {
+    if (!isMenuOpen) return
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsMenuOpen(false)
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [isMenuOpen])
 
   return (
     <header className="bg-hatofes-bg">

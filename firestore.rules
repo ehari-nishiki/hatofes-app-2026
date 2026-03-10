@@ -35,20 +35,60 @@ service cloud.firestore {
              getUserData().role == 'admin';
     }
 
+    function isPublicConfig(configId) {
+      return configId in [
+        'featureToggles',
+        'festivalDate',
+        'radio',
+        'personalRanking',
+        'classRanking',
+        'loginBonus',
+        'executiveAccess',
+      ];
+    }
+
     // Users collection
     match /users/{userId} {
+      function isValidUserCreate() {
+        let keys = request.resource.data.keys();
+        let allowedBase = [
+          'email', 'username', 'role', 'totalPoints', 'gachaTickets', 'createdAt', 'lastLoginDate',
+          'grade', 'class', 'studentNumber', 'notificationsEnabled', 'theme'
+        ];
+
+        return keys.hasOnly(allowedBase) &&
+          request.resource.data.email == request.auth.token.email &&
+          request.resource.data.username is string &&
+          request.resource.data.username.size() > 0 &&
+          request.resource.data.username.size() <= 50 &&
+          request.resource.data.totalPoints == 0 &&
+          request.resource.data.gachaTickets == 10 &&
+          request.resource.data.createdAt is timestamp &&
+          request.resource.data.lastLoginDate is string &&
+          (
+            request.resource.data.role == 'teacher' ||
+            (
+              request.resource.data.role == 'student' &&
+              request.resource.data.grade is int &&
+              request.resource.data.class is string &&
+              request.resource.data.studentNumber is int
+            )
+          );
+      }
+
       // 許可されたフィールドのみ更新可能（roleは含まない - 権限昇格攻撃を防止）
       function isAllowedUserUpdate() {
-        let allowedFields = ['realName', 'notificationsEnabled', 'theme', 'lastLoginDate'];
+        let allowedFields = ['realName', 'notificationsEnabled', 'theme', 'lastLoginDate', 'profileImageUrl'];
         let changedFields = request.resource.data.diff(resource.data).affectedKeys();
         return changedFields.hasOnly(allowedFields);
       }
 
-      // Anyone with valid domain can read any user (for leaderboards)
-      allow read: if isSignedIn() && isValidDomain();
+      // Users can read their own document; admin/staff can read all
+      allow read: if isSignedIn() && isValidDomain() &&
+        (request.auth.uid == userId || isAdminOrStaff());
 
       // Users can only create their own document
-      allow create: if isSignedIn() && isValidDomain() && request.auth.uid == userId;
+      allow create: if isSignedIn() && isValidDomain() && request.auth.uid == userId && isValidUserCreate();
 
       // ユーザー自身: 許可されたフィールドのみ更新可能
       // 管理者のみ: 全フィールド更新可能（roleを含む）
@@ -75,8 +115,8 @@ service cloud.firestore {
       // Anyone authenticated can read
       allow read: if isSignedIn() && isValidDomain();
 
-      // Create is allowed for authenticated users (for auto-initialization)
-      allow create: if isSignedIn() && isValidDomain();
+      // Create is denied from client — Cloud Functions/admin only
+      allow create: if isAdminOrStaff();
 
       // Update/delete is only for admin/staff
       allow update, delete: if isAdminOrStaff();
@@ -111,13 +151,22 @@ service cloud.firestore {
 
     // Config collection (read-only for domain restriction flag etc.)
     match /config/{configId} {
-      allow read: if true; // must be readable by rules themselves (get() call)
+      allow read: if (isSignedIn() && isValidDomain() && isPublicConfig(configId)) || isAdminOrStaff();
       allow write: if isAdminOrStaff();
     }
 
     // Feedbacks collection
     match /feedbacks/{feedbackId} {
-      allow create: if isSignedIn() && isValidDomain();
+      allow create: if isSignedIn() && isValidDomain() &&
+        request.resource.data.keys().hasOnly(['userId', 'username', 'message', 'createdAt']) &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.username is string &&
+        request.resource.data.username.size() > 0 &&
+        request.resource.data.username.size() <= 50 &&
+        request.resource.data.message is string &&
+        request.resource.data.message.size() > 0 &&
+        request.resource.data.message.size() <= 2000 &&
+        request.resource.data.createdAt is timestamp;
       allow read: if isAdminOrStaff();
       allow update, delete: if false;
     }
@@ -167,10 +216,25 @@ service cloud.firestore {
         allow read: if isSignedIn() && isValidDomain() && request.auth.uid == userId;
 
         // Users can create/update their own status
-        allow create, update: if isSignedIn() && isValidDomain() && request.auth.uid == userId;
+        allow create, update: if isSignedIn() && isValidDomain() && request.auth.uid == userId &&
+          request.resource.data.keys().hasOnly(['readAt', 'pointsClaimed']) &&
+          request.resource.data.readAt is timestamp &&
+          request.resource.data.pointsClaimed is bool;
 
         // Only admins can delete
         allow delete: if isAdmin();
+      }
+
+      // reactions subcollection - stores per-user emoji reactions
+      match /reactions/{userId} {
+        allow read: if isSignedIn() && isValidDomain();
+        allow create, update: if isSignedIn() && isValidDomain() && request.auth.uid == userId &&
+          request.resource.data.keys().hasOnly(['emoji', 'reactedAt']) &&
+          request.resource.data.emoji is string &&
+          request.resource.data.emoji.size() > 0 &&
+          request.resource.data.emoji.size() <= 16 &&
+          request.resource.data.reactedAt is timestamp;
+        allow delete: if isSignedIn() && isValidDomain() && request.auth.uid == userId;
       }
     }
 
@@ -264,13 +328,24 @@ service cloud.firestore {
       allow read: if isSignedIn() && isValidDomain();
 
       // Anyone authenticated can create questions
-      allow create: if isSignedIn() && isValidDomain();
+      allow create: if isSignedIn() && isValidDomain() &&
+        request.resource.data.keys().hasOnly([
+          'question', 'submittedBy', 'submittedByName', 'submittedAt', 'status', 'likes', 'likedBy', 'isPinned'
+        ]) &&
+        request.resource.data.question is string &&
+        request.resource.data.question.size() > 0 &&
+        request.resource.data.question.size() <= 500 &&
+        request.resource.data.submittedBy == request.auth.uid &&
+        request.resource.data.submittedByName is string &&
+        request.resource.data.submittedByName.size() > 0 &&
+        request.resource.data.submittedAt is timestamp &&
+        request.resource.data.status == 'pending' &&
+        request.resource.data.likes == 0 &&
+        request.resource.data.likedBy.size() == 0 &&
+        request.resource.data.isPinned == false;
 
-      // Users can update likes; executives/admins can update anything
+      // Only executives/admins can update
       allow update: if isSignedIn() && isValidDomain() && (
-        // Regular users can only update likes/likedBy
-        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'likedBy'])) ||
-        // Executives (check by config) or admins can update anything
         isAdmin() ||
         (exists(/databases/$(database)/documents/config/executiveAccess) &&
          request.auth.uid in get(/databases/$(database)/documents/config/executiveAccess).data.executiveUserIds)
@@ -281,6 +356,37 @@ service cloud.firestore {
         (isSignedIn() && isValidDomain() &&
          exists(/databases/$(database)/documents/config/executiveAccess) &&
          request.auth.uid in get(/databases/$(database)/documents/config/executiveAccess).data.executiveUserIds);
+    }
+
+    // Booth reviews collection
+    match /boothReviews/{reviewId} {
+      // Anyone authenticated can read
+      allow read: if isSignedIn() && isValidDomain();
+
+      // Users can create their own review (1 review per booth enforced by Cloud Function or client)
+      allow create: if isSignedIn() && isValidDomain() &&
+        request.resource.data.userId == request.auth.uid;
+
+      // No editing or deleting reviews
+      allow update, delete: if isAdminOrStaff();
+    }
+
+    // Live challenges collection (class vs class time attack)
+    match /liveChallenges/{challengeId} {
+      allow read: if isSignedIn() && isValidDomain();
+      allow write: if isAdminOrStaff();
+
+      // Class scores subcollection
+      match /classScores/{classId} {
+        allow read: if isSignedIn() && isValidDomain();
+        allow write: if false; // Cloud Functions only
+      }
+    }
+
+    // Tetris daily challenges
+    match /tetrisDailyChallenges/{challengeId} {
+      allow read: if isSignedIn() && isValidDomain();
+      allow write: if isAdminOrStaff();
     }
 
     // Point aggregations collection (日次集計 - Cloud Functions only)

@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { CONFETTI_COLORS, GRADIENT_STYLES } from '@/lib/animations';
+import { hapticSuccess } from '@/lib/haptics';
 
 interface PointRewardModalProps {
   isOpen: boolean;
@@ -173,6 +174,7 @@ export function PointRewardModal({ isOpen, points, reason, onClose, unit = 'pt',
     if (isOpen) {
       setShowAnimation(true);
       startConfetti();
+      hapticSuccess();
       // Auto close after 3 seconds
       const timer = setTimeout(() => {
         onClose();
@@ -194,15 +196,18 @@ export function PointRewardModal({ isOpen, points, reason, onClose, unit = 'pt',
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[120] bg-black/50 p-4 backdrop-blur-sm">
       {/* Confetti Canvas */}
-      <canvas ref={canvasRef} className="absolute inset-0 pointer-events-none z-60" />
+      <canvas ref={canvasRef} className="absolute inset-0 pointer-events-none z-[121]" />
 
       <div
-        className={`bg-hatofes-dark border border-hatofes-gray rounded-2xl p-8 max-w-sm w-full mx-4 text-center relative transform transition-all duration-300 z-50 ${
+        className={`absolute left-1/2 top-1/2 z-[122] w-[min(24rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 transform rounded-2xl border border-hatofes-gray bg-hatofes-dark p-8 text-center transition-all duration-300 ${
           showAnimation ? 'scale-100 opacity-100' : 'scale-95 opacity-0'
         }`}
-        style={{ boxShadow: '0 0 40px rgba(255, 195, 0, 0.3)' }}
+        style={{
+          boxShadow: '0 0 40px rgba(255, 195, 0, 0.3)',
+          maxHeight: 'calc(100svh - 2rem)',
+        }}
       >
         {/* Animated Icon */}
         <div className="mb-4 flex justify-center">

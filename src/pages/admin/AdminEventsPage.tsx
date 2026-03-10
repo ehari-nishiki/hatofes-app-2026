@@ -13,6 +13,8 @@ import {
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { useAuth } from '@/contexts/AuthContext'
+import { Toast, useToast } from '@/components/ui/Toast'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { Spinner } from '@/components/ui/Spinner'
 import type { FestivalEvent, EventCategory } from '@/types/firestore'
 
@@ -34,6 +36,10 @@ export default function AdminEventsPage() {
   const [saving, setSaving] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [showForm, setShowForm] = useState(false)
+  const { toast, showToast, hideToast } = useToast()
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string; message: string; onConfirm: () => void
+  } | null>(null)
 
   // Form state
   const [formData, setFormData] = useState({
@@ -103,7 +109,7 @@ export default function AdminEventsPage() {
     if (!currentUser) return
 
     if (!formData.startTime || !formData.endTime) {
-      alert('開始時間と終了時間を入力してください')
+      showToast('開始時間と終了時間を入力してください', 'error')
       return
     }
 
@@ -111,7 +117,7 @@ export default function AdminEventsPage() {
     const endTime = new Date(formData.endTime)
 
     if (startTime >= endTime) {
-      alert('終了時間は開始時間より後にしてください')
+      showToast('終了時間は開始時間より後にしてください', 'error')
       return
     }
 
@@ -144,26 +150,31 @@ export default function AdminEventsPage() {
       }
 
       resetForm()
-      alert(editingId ? 'イベントを更新しました' : 'イベントを追加しました')
+      showToast(editingId ? 'イベントを更新しました' : 'イベントを追加しました', 'success')
     } catch (error) {
       console.error('Error saving event:', error)
-      alert('保存に失敗しました')
+      showToast('保存に失敗しました', 'error')
     } finally {
       setSaving(false)
     }
   }
 
-  const handleDelete = async (eventId: string) => {
-    if (!confirm('このイベントを削除しますか？')) return
-
-    try {
-      await deleteDoc(doc(db, 'events', eventId))
-      setEvents((prev) => prev.filter((e) => e.id !== eventId))
-      alert('イベントを削除しました')
-    } catch (error) {
-      console.error('Error deleting event:', error)
-      alert('削除に失敗しました')
-    }
+  const handleDelete = (eventId: string) => {
+    setConfirmDialog({
+      title: 'イベント削除',
+      message: 'このイベントを削除しますか？',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        try {
+          await deleteDoc(doc(db, 'events', eventId))
+          setEvents((prev) => prev.filter((e) => e.id !== eventId))
+          showToast('イベントを削除しました', 'success')
+        } catch (error) {
+          console.error('Error deleting event:', error)
+          showToast('削除に失敗しました', 'error')
+        }
+      },
+    })
   }
 
   const formatDateTime = (timestamp: Timestamp) => {
@@ -186,6 +197,16 @@ export default function AdminEventsPage() {
 
   return (
     <div className="min-h-screen bg-hatofes-bg">
+      {toast && <Toast message={toast.message} type={toast.type} onClose={hideToast} />}
+      <ConfirmDialog
+        isOpen={!!confirmDialog}
+        title={confirmDialog?.title || ''}
+        message={confirmDialog?.message || ''}
+        variant="danger"
+        confirmLabel="削除"
+        onConfirm={() => confirmDialog?.onConfirm()}
+        onCancel={() => setConfirmDialog(null)}
+      />
       {/* Header */}
       <header className="bg-hatofes-dark border-b border-hatofes-gray-lighter px-4 py-4">
         <div className="max-w-4xl mx-auto flex items-center justify-between">

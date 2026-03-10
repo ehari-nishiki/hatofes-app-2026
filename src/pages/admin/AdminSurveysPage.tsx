@@ -4,6 +4,7 @@ import { collection, getDocs, getDoc, doc, setDoc, updateDoc, deleteDoc, Timesta
 import { db } from '@/lib/firebase'
 import { useAuth } from '@/contexts/AuthContext'
 import { Spinner } from '@/components/ui/Spinner'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ImageUploader } from '@/components/ui/ImageUploader'
 import { exportSurveyResponsesToCSV } from '@/lib/csvUtils'
 
@@ -63,6 +64,9 @@ export default function AdminSurveysPage() {
   const { currentUser, userData } = useAuth()
   const [surveys, setSurveys] = useState<Survey[]>([])
   const [loading, setLoading] = useState(true)
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string; message: string; onConfirm: () => void
+  } | null>(null)
   const [showCreate, setShowCreate] = useState(false)
   const [newSurvey, setNewSurvey] = useState<NewSurvey>({
     title: '',
@@ -303,32 +307,42 @@ export default function AdminSurveysPage() {
   }
 
   // アンケート却下（adminのみ）
-  const handleRejectSurvey = async (surveyId: string) => {
-    if (!confirm('このアンケートを却下しますか？作成者に通知されます。')) return
-
-    try {
-      await updateDoc(doc(db, 'surveys', surveyId), {
-        status: 'closed',
-        rejectedAt: Timestamp.now(),
-        rejectedBy: currentUser?.uid,
-      })
-      setMessage({ type: 'success', text: 'アンケートを却下しました' })
-      fetchSurveys()
-    } catch (error) {
-      console.error('Error rejecting survey:', error)
-      setMessage({ type: 'error', text: '却下に失敗しました' })
-    }
+  const handleRejectSurvey = (surveyId: string) => {
+    setConfirmDialog({
+      title: 'アンケート却下',
+      message: 'このアンケートを却下しますか？作成者に通知されます。',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        try {
+          await updateDoc(doc(db, 'surveys', surveyId), {
+            status: 'closed',
+            rejectedAt: Timestamp.now(),
+            rejectedBy: currentUser?.uid,
+          })
+          setMessage({ type: 'success', text: 'アンケートを却下しました' })
+          fetchSurveys()
+        } catch (error) {
+          console.error('Error rejecting survey:', error)
+          setMessage({ type: 'error', text: '却下に失敗しました' })
+        }
+      },
+    })
   }
 
-  const handleDelete = async (surveyId: string) => {
-    if (!confirm('このアンケートを削除しますか？')) return
-
-    try {
-      await deleteDoc(doc(db, 'surveys', surveyId))
-      fetchSurveys()
-    } catch (error) {
-      console.error('Error deleting survey:', error)
-    }
+  const handleDelete = (surveyId: string) => {
+    setConfirmDialog({
+      title: 'アンケート削除',
+      message: 'このアンケートを削除しますか？',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        try {
+          await deleteDoc(doc(db, 'surveys', surveyId))
+          fetchSurveys()
+        } catch (error) {
+          console.error('Error deleting survey:', error)
+        }
+      },
+    })
   }
 
   const handleSaveSheetConfig = async () => {
@@ -371,6 +385,15 @@ export default function AdminSurveysPage() {
 
   return (
     <div className="min-h-screen bg-hatofes-bg">
+      <ConfirmDialog
+        isOpen={!!confirmDialog}
+        title={confirmDialog?.title || ''}
+        message={confirmDialog?.message || ''}
+        variant="danger"
+        confirmLabel="実行"
+        onConfirm={() => confirmDialog?.onConfirm()}
+        onCancel={() => setConfirmDialog(null)}
+      />
       {/* Header */}
       <header className="bg-hatofes-dark border-b border-hatofes-gray-lighter px-4 py-4">
         <div className="max-w-4xl mx-auto flex items-center justify-between">

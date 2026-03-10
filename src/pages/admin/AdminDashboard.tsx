@@ -9,12 +9,19 @@ import {
   PieChart, Pie, Cell, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, Tooltip, Legend
 } from 'recharts'
+import { Toast, useToast } from '@/components/ui/Toast'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { RoleBadge } from '@/lib/roleDisplay'
 
 const fns = getFunctions(app)
 const updateLoginBonusConfigFn = httpsCallable<
-  { points: number; tickets: number },
+  { points: number; tickets: number; streakMilestones: Record<number, number> },
   { success: boolean; message: string }
 >(fns, 'updateLoginBonusConfig')
+const updateTetrisRewardConfigFn = httpsCallable<
+  { firstTierLimit: number; firstTierMultiplier: number; secondTierLimit: number; secondTierMultiplier: number },
+  { success: boolean; message: string }
+>(fns, 'updateTetrisRewardConfig')
 // refreshDashboardStatsFn is available but not used yet (for future manual refresh feature)
 // const refreshDashboardStatsFn = httpsCallable<void, { success: boolean; stats: DashboardStats }>(fns, 'refreshDashboardStats')
 
@@ -85,8 +92,17 @@ export default function AdminDashboard() {
   // Login bonus config
   const [loginBonusPoints, setLoginBonusPoints] = useState(10)
   const [loginBonusTickets, setLoginBonusTickets] = useState(1)
+  const [streakMilestones, setStreakMilestones] = useState<Record<number, number>>({ 3: 20, 7: 50, 14: 100, 30: 300 })
   const [bonusUpdating, setBonusUpdating] = useState(false)
   const [bonusMessage, setBonusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [tetrisRewardConfig, setTetrisRewardConfig] = useState({
+    firstTierLimit: 10,
+    firstTierMultiplier: 10,
+    secondTierLimit: 100,
+    secondTierMultiplier: 1,
+  })
+  const [tetrisRewardUpdating, setTetrisRewardUpdating] = useState(false)
+  const [tetrisRewardMessage, setTetrisRewardMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
   // Point statistics
   const [pointStats, setPointStats] = useState<{
@@ -103,6 +119,11 @@ export default function AdminDashboard() {
   const [privilegedUsers, setPrivilegedUsers] = useState<{
     admins: Array<{ id: string; email: string; username: string; isAllowed: boolean }>;
     staff: Array<{ id: string; email: string; username: string }>;
+  } | null>(null)
+
+  const { toast, showToast, hideToast } = useToast()
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string; message: string; variant: 'default' | 'danger'; onConfirm: () => void
   } | null>(null)
 
   // Tetris ranking reset
@@ -191,6 +212,18 @@ export default function AdminDashboard() {
           const bonusData = bonusDoc.data()
           setLoginBonusPoints(bonusData.points ?? 10)
           setLoginBonusTickets(bonusData.tickets ?? 1)
+          setStreakMilestones(bonusData.streakMilestones ?? { 3: 20, 7: 50, 14: 100, 30: 300 })
+        }
+
+        const tetrisRewardDoc = await getDoc(doc(db, 'config', 'tetrisRewards'))
+        if (tetrisRewardDoc.exists()) {
+          const rewardData = tetrisRewardDoc.data()
+          setTetrisRewardConfig({
+            firstTierLimit: rewardData.firstTierLimit ?? 10,
+            firstTierMultiplier: rewardData.firstTierMultiplier ?? 10,
+            secondTierLimit: rewardData.secondTierLimit ?? 100,
+            secondTierMultiplier: rewardData.secondTierMultiplier ?? 1,
+          })
         }
 
         // Fetch festival date config
@@ -309,13 +342,41 @@ export default function AdminDashboard() {
     setBonusUpdating(true)
     setBonusMessage(null)
     try {
-      await updateLoginBonusConfigFn({ points: loginBonusPoints, tickets: loginBonusTickets })
+      await updateLoginBonusConfigFn({
+        points: loginBonusPoints,
+        tickets: loginBonusTickets,
+        streakMilestones,
+      })
       setBonusMessage({ type: 'success', text: 'ログインボーナス設定を更新しました' })
     } catch (error) {
       console.error('Error updating login bonus:', error)
       setBonusMessage({ type: 'error', text: '更新に失敗しました' })
     } finally {
       setBonusUpdating(false)
+    }
+  }
+
+  const handleUpdateTetrisRewards = async () => {
+    if (
+      tetrisRewardConfig.firstTierLimit < 0 ||
+      tetrisRewardConfig.firstTierMultiplier < 0 ||
+      tetrisRewardConfig.secondTierLimit < tetrisRewardConfig.firstTierLimit ||
+      tetrisRewardConfig.secondTierMultiplier < 0
+    ) {
+      setTetrisRewardMessage({ type: 'error', text: 'テトリス報酬設定が不正です' })
+      return
+    }
+
+    setTetrisRewardUpdating(true)
+    setTetrisRewardMessage(null)
+    try {
+      await updateTetrisRewardConfigFn(tetrisRewardConfig)
+      setTetrisRewardMessage({ type: 'success', text: 'テトリス報酬設定を更新しました' })
+    } catch (error) {
+      console.error('Error updating tetris rewards:', error)
+      setTetrisRewardMessage({ type: 'error', text: '更新に失敗しました' })
+    } finally {
+      setTetrisRewardUpdating(false)
     }
   }
 
@@ -330,49 +391,61 @@ export default function AdminDashboard() {
       })
     } catch (error) {
       console.error('Error listing privileged users:', error)
-      alert('権限ユーザーの取得に失敗しました')
+      showToast('権限ユーザーの取得に失敗しました', 'error')
     } finally {
       setAuditLoading(false)
     }
   }
 
   // Security audit: Fix unauthorized admins
-  const handleAuditAndFix = async () => {
-    if (!confirm('不正なadminユーザーを自動でstudentに降格します。実行しますか？')) return
-
-    setAuditLoading(true)
-    try {
-      const result = await auditAndFixAdminRolesFn()
-      setAuditResult({
-        fixed: result.data.fixed,
-        kept: result.data.kept,
-      })
-      alert(result.data.message)
-      // Refresh the list
-      await handleListPrivilegedUsers()
-    } catch (error) {
-      console.error('Error auditing admin roles:', error)
-      alert('監査に失敗しました: ' + (error as Error).message)
-    } finally {
-      setAuditLoading(false)
-    }
+  const handleAuditAndFix = () => {
+    setConfirmDialog({
+      title: '権限監査の実行',
+      message: '不正なadminユーザーを自動でstudentに降格します。実行しますか？',
+      variant: 'danger',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        setAuditLoading(true)
+        try {
+          const result = await auditAndFixAdminRolesFn()
+          setAuditResult({
+            fixed: result.data.fixed,
+            kept: result.data.kept,
+          })
+          showToast(result.data.message, 'success')
+          // Refresh the list
+          await handleListPrivilegedUsers()
+        } catch (error) {
+          console.error('Error auditing admin roles:', error)
+          showToast('監査に失敗しました: ' + (error as Error).message, 'error')
+        } finally {
+          setAuditLoading(false)
+        }
+      },
+    })
   }
 
   // Reset tetris rankings
-  const handleResetTetrisRankings = async () => {
-    if (!confirm('本当にテトリスランキングを全てリセットしますか？この操作は取り消せません。')) return
-
-    setTetrisResetLoading(true)
-    setTetrisResetMessage(null)
-    try {
-      const result = await resetTetrisRankingsFn()
-      setTetrisResetMessage({ type: 'success', text: result.data.message })
-    } catch (error) {
-      console.error('Error resetting tetris rankings:', error)
-      setTetrisResetMessage({ type: 'error', text: 'リセットに失敗しました: ' + (error as Error).message })
-    } finally {
-      setTetrisResetLoading(false)
-    }
+  const handleResetTetrisRankings = () => {
+    setConfirmDialog({
+      title: 'テトリスランキングリセット',
+      message: '本当にテトリスランキングを全てリセットしますか？この操作は取り消せません。',
+      variant: 'danger',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        setTetrisResetLoading(true)
+        setTetrisResetMessage(null)
+        try {
+          const result = await resetTetrisRankingsFn()
+          setTetrisResetMessage({ type: 'success', text: result.data.message })
+        } catch (error) {
+          console.error('Error resetting tetris rankings:', error)
+          setTetrisResetMessage({ type: 'error', text: 'リセットに失敗しました: ' + (error as Error).message })
+        } finally {
+          setTetrisResetLoading(false)
+        }
+      },
+    })
   }
 
   // Update feature toggles
@@ -380,10 +453,10 @@ export default function AdminDashboard() {
     setFeatureTogglesSaving(true)
     try {
       await setDoc(doc(db, 'config', 'featureToggles'), featureToggles)
-      alert('機能設定を保存しました')
+      showToast('機能設定を保存しました', 'success')
     } catch (error) {
       console.error('Error updating feature toggles:', error)
-      alert('保存に失敗しました')
+      showToast('保存に失敗しました', 'error')
     } finally {
       setFeatureTogglesSaving(false)
     }
@@ -392,11 +465,11 @@ export default function AdminDashboard() {
   // Add executive
   const handleAddExecutive = () => {
     if (!newExecutiveId.trim() || !newExecutiveName.trim()) {
-      alert('ユーザーIDと名前を入力してください')
+      showToast('ユーザーIDと名前を入力してください', 'error')
       return
     }
     if (executiveUserIds.includes(newExecutiveId.trim())) {
-      alert('このユーザーIDは既に登録されています')
+      showToast('このユーザーIDは既に登録されています', 'error')
       return
     }
     setExecutiveUserIds([...executiveUserIds, newExecutiveId.trim()])
@@ -420,10 +493,10 @@ export default function AdminDashboard() {
         executiveNames,
         lastUpdated: Timestamp.now(),
       }, { merge: true })
-      alert('三役設定を保存しました')
+      showToast('三役設定を保存しました', 'success')
     } catch (error) {
       console.error('Error saving executive access:', error)
-      alert('保存に失敗しました')
+      showToast('保存に失敗しました', 'error')
     } finally {
       setExecutiveSaving(false)
     }
@@ -477,75 +550,81 @@ export default function AdminDashboard() {
 
       // Update stats
       setStats(prev => ({ ...prev, totalPoints }))
-      alert(`総ポイント数を再計算しました: ${totalPoints.toLocaleString()} pt`)
+      showToast(`総ポイント数を再計算しました: ${totalPoints.toLocaleString()} pt`, 'success')
     } catch (error) {
       console.error('Error recalculating total points:', error)
-      alert('再計算に失敗しました')
+      showToast('再計算に失敗しました', 'error')
     } finally {
       setRecalculatingPoints(false)
     }
   }
 
   // Recalculate class points from user data
-  const handleRecalculateClassPoints = async () => {
-    if (!confirm('クラスポイントをユーザーデータから再計算しますか？')) return
+  const handleRecalculateClassPoints = () => {
+    setConfirmDialog({
+      title: 'クラスポイント再計算',
+      message: 'クラスポイントをユーザーデータから再計算しますか？',
+      variant: 'default',
+      onConfirm: async () => {
+        setConfirmDialog(null)
+        setRecalculating(true)
+        try {
+          // Get all users
+          const usersSnap = await getDocs(collection(db, 'users'))
 
-    setRecalculating(true)
-    try {
-      // Get all users
-      const usersSnap = await getDocs(collection(db, 'users'))
+          // Calculate class totals
+          const classData: Record<string, { grade: number; className: string; totalPoints: number; memberCount: number }> = {}
 
-      // Calculate class totals
-      const classData: Record<string, { grade: number; className: string; totalPoints: number; memberCount: number }> = {}
-
-      usersSnap.forEach(docSnap => {
-        const data = docSnap.data()
-        if (data.grade && data.class) {
-          const classId = `${data.grade}-${data.class}`
-          if (!classData[classId]) {
-            classData[classId] = {
-              grade: data.grade,
-              className: data.class,
-              totalPoints: 0,
-              memberCount: 0,
+          usersSnap.forEach(docSnap => {
+            const data = docSnap.data()
+            if (data.grade && data.class) {
+              const classId = `${data.grade}-${data.class}`
+              if (!classData[classId]) {
+                classData[classId] = {
+                  grade: data.grade,
+                  className: data.class,
+                  totalPoints: 0,
+                  memberCount: 0,
+                }
+              }
+              classData[classId].totalPoints += data.totalPoints || 0
+              classData[classId].memberCount += 1
             }
+          })
+
+          // Delete all existing class documents using batch
+          const existingClassesSnap = await getDocs(collection(db, 'classes'))
+          const deleteBatch = writeBatch(db)
+          existingClassesSnap.docs.forEach(docSnap => {
+            deleteBatch.delete(doc(db, 'classes', docSnap.id))
+          })
+          await deleteBatch.commit()
+
+          // Create new class documents using batch
+          const createBatch = writeBatch(db)
+          for (const [classId, data] of Object.entries(classData)) {
+            createBatch.set(doc(db, 'classes', classId), data)
           }
-          classData[classId].totalPoints += data.totalPoints || 0
-          classData[classId].memberCount += 1
+          await createBatch.commit()
+
+          // Refresh the page data
+          const classesQuery = query(collection(db, 'classes'), orderBy('totalPoints', 'desc'), limit(5))
+          const classesSnap = await getDocs(classesQuery)
+          const classes: TopClass[] = []
+          classesSnap.forEach(docSnap => {
+            classes.push({ id: docSnap.id, ...docSnap.data() } as TopClass)
+          })
+          setTopClasses(classes)
+
+          showToast('クラスポイントを再計算しました', 'success')
+        } catch (error) {
+          console.error('Error recalculating class points:', error)
+          showToast('再計算に失敗しました', 'error')
+        } finally {
+          setRecalculating(false)
         }
-      })
-
-      // Delete all existing class documents using batch
-      const existingClassesSnap = await getDocs(collection(db, 'classes'))
-      const deleteBatch = writeBatch(db)
-      existingClassesSnap.docs.forEach(docSnap => {
-        deleteBatch.delete(doc(db, 'classes', docSnap.id))
-      })
-      await deleteBatch.commit()
-
-      // Create new class documents using batch
-      const createBatch = writeBatch(db)
-      for (const [classId, data] of Object.entries(classData)) {
-        createBatch.set(doc(db, 'classes', classId), data)
-      }
-      await createBatch.commit()
-
-      // Refresh the page data
-      const classesQuery = query(collection(db, 'classes'), orderBy('totalPoints', 'desc'), limit(5))
-      const classesSnap = await getDocs(classesQuery)
-      const classes: TopClass[] = []
-      classesSnap.forEach(docSnap => {
-        classes.push({ id: docSnap.id, ...docSnap.data() } as TopClass)
-      })
-      setTopClasses(classes)
-
-      alert('クラスポイントを再計算しました')
-    } catch (error) {
-      console.error('Error recalculating class points:', error)
-      alert('再計算に失敗しました')
-    } finally {
-      setRecalculating(false)
-    }
+      },
+    })
   }
 
   if (loading) {
@@ -558,12 +637,25 @@ export default function AdminDashboard() {
 
   return (
     <div className="min-h-screen bg-hatofes-bg">
+      {toast && <Toast message={toast.message} type={toast.type} onClose={hideToast} />}
+      <ConfirmDialog
+        isOpen={!!confirmDialog}
+        title={confirmDialog?.title || ''}
+        message={confirmDialog?.message || ''}
+        variant={confirmDialog?.variant || 'default'}
+        confirmLabel="実行"
+        onConfirm={() => confirmDialog?.onConfirm()}
+        onCancel={() => setConfirmDialog(null)}
+      />
       {/* Header */}
       <header className="bg-hatofes-dark border-b border-hatofes-gray-lighter px-4 py-4">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div>
             <h1 className="font-display text-xl font-bold text-hatofes-white">管理パネル</h1>
-            <p className="text-sm text-hatofes-gray">{userData?.username} ({userData?.role})</p>
+            <div className="mt-2 flex items-center gap-2">
+              <p className="text-sm text-hatofes-gray">{userData?.username}</p>
+              {userData?.role ? <RoleBadge role={userData.role} department={userData.department} size="sm" /> : null}
+            </div>
           </div>
           <Link to="/home" className="btn-sub text-sm px-4 py-2">
             ユーザー画面へ
@@ -626,6 +718,26 @@ export default function AdminDashboard() {
                   min={0}
                   className="w-full bg-hatofes-dark border border-hatofes-gray rounded-lg px-4 py-2 text-hatofes-white"
                 />
+              </div>
+            </div>
+            <div className="mb-4">
+              <label className="block text-sm text-hatofes-gray mb-2">ストリークボーナス</label>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[3, 7, 14, 30].map((day) => (
+                  <div key={day} className="p-3 bg-hatofes-dark rounded-lg">
+                    <p className="text-xs text-hatofes-gray mb-2">{day}日連続</p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        value={streakMilestones[day] ?? 0}
+                        min={0}
+                        onChange={e => setStreakMilestones(prev => ({ ...prev, [day]: parseInt(e.target.value) || 0 }))}
+                        className="w-full bg-hatofes-bg border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white"
+                      />
+                      <span className="text-sm text-hatofes-gray">pt</span>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
             {bonusMessage && (
@@ -943,6 +1055,71 @@ export default function AdminDashboard() {
             </h2>
 
             <div className="space-y-4">
+              <div>
+                <h3 className="text-sm font-bold text-hatofes-white mb-2">テトリス報酬設定</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-3">
+                  <div className="p-3 bg-hatofes-dark rounded-lg">
+                    <label className="block text-xs text-hatofes-gray mb-2">第1段階の上限列数</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={tetrisRewardConfig.firstTierLimit}
+                      onChange={e => setTetrisRewardConfig(prev => ({ ...prev, firstTierLimit: parseInt(e.target.value) || 0 }))}
+                      className="w-full bg-hatofes-bg border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white"
+                    />
+                  </div>
+                  <div className="p-3 bg-hatofes-dark rounded-lg">
+                    <label className="block text-xs text-hatofes-gray mb-2">第1段階の倍率</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={tetrisRewardConfig.firstTierMultiplier}
+                      onChange={e => setTetrisRewardConfig(prev => ({ ...prev, firstTierMultiplier: parseInt(e.target.value) || 0 }))}
+                      className="w-full bg-hatofes-bg border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white"
+                    />
+                  </div>
+                  <div className="p-3 bg-hatofes-dark rounded-lg">
+                    <label className="block text-xs text-hatofes-gray mb-2">第2段階の上限列数</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={tetrisRewardConfig.secondTierLimit}
+                      onChange={e => setTetrisRewardConfig(prev => ({ ...prev, secondTierLimit: parseInt(e.target.value) || 0 }))}
+                      className="w-full bg-hatofes-bg border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white"
+                    />
+                  </div>
+                  <div className="p-3 bg-hatofes-dark rounded-lg">
+                    <label className="block text-xs text-hatofes-gray mb-2">第2段階の倍率</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={tetrisRewardConfig.secondTierMultiplier}
+                      onChange={e => setTetrisRewardConfig(prev => ({ ...prev, secondTierMultiplier: parseInt(e.target.value) || 0 }))}
+                      className="w-full bg-hatofes-bg border border-hatofes-gray rounded-lg px-3 py-2 text-hatofes-white"
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-hatofes-gray mb-3">
+                  1〜{tetrisRewardConfig.firstTierLimit}列は ×{tetrisRewardConfig.firstTierMultiplier}pt、{tetrisRewardConfig.firstTierLimit + 1}〜{tetrisRewardConfig.secondTierLimit}列は ×{tetrisRewardConfig.secondTierMultiplier}pt
+                </p>
+                {tetrisRewardMessage && (
+                  <div className={`mb-3 p-3 rounded-lg ${
+                    tetrisRewardMessage.type === 'success'
+                      ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                      : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                  }`}>
+                    <p className="text-sm">{tetrisRewardMessage.text}</p>
+                  </div>
+                )}
+                <button
+                  onClick={handleUpdateTetrisRewards}
+                  disabled={tetrisRewardUpdating}
+                  className="btn-main py-2 px-4 disabled:opacity-50"
+                >
+                  {tetrisRewardUpdating ? '更新中...' : 'テトリス報酬を保存'}
+                </button>
+              </div>
+
               <div>
                 <h3 className="text-sm font-bold text-hatofes-white mb-2">テトリスランキング</h3>
                 <div className="mb-3 p-3 bg-orange-500/10 border border-orange-500/30 rounded-lg">

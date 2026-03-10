@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect } from 'react'
 import { animate } from 'animejs'
+import { hapticLight } from '@/lib/haptics'
 
 interface AnimatedButtonProps {
   children: React.ReactNode
@@ -66,6 +67,9 @@ export function AnimatedButton({
       })
     }
 
+    // Haptic feedback
+    hapticLight()
+
     // Press animation
     if (buttonRef.current) {
       animate(buttonRef.current, {
@@ -95,9 +99,9 @@ export function AnimatedButton({
   `
 
   const sizeClasses = {
-    sm: 'px-4 py-2 text-sm rounded-lg',
-    md: 'px-6 py-3 text-base rounded-lg',
-    lg: 'px-8 py-4 text-lg rounded-xl',
+    sm: 'px-5 py-2 text-sm rounded-full',
+    md: 'px-6 py-3 text-base rounded-full',
+    lg: 'px-8 py-4 text-lg rounded-full',
   }
 
   const variantClasses = {

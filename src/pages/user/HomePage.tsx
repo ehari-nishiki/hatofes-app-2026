@@ -13,6 +13,9 @@ import { calculateLevel, getPointsToNextLevel, LEVEL_TITLES, LEVEL_COLORS } from
 import { CacheService } from '@/lib/cacheService'
 import { TetrisIcon, GachaIcon, RadioIcon, QAIcon, ChevronRightIcon as ChevronIcon, BellIcon, TaskIcon, MissionIcon } from '@/components/ui/Icon'
 import { ViewMoreButton, PointBadge } from '@/components/ui/Button'
+import { hapticMedium } from '@/lib/haptics'
+import { STREAK_MILESTONES } from '@/lib/badgeSystem'
+import { RoleBadge, getRoleDisplayLabel } from '@/lib/roleDisplay'
 import type { Survey, Notification as NotificationType } from '@/types/firestore'
 
 interface FeatureToggles {
@@ -24,6 +27,18 @@ interface FeatureToggles {
 
 type SurveyWithStatus = Survey & { id: string; isAnswered: boolean }
 type NotificationWithStatus = NotificationType & { id: string; isRead: boolean }
+
+function getJstDateString(nowMs: number) {
+  return new Date(nowMs + 9 * 60 * 60 * 1000).toISOString().split('T')[0]
+}
+
+function getMsUntilNextJstMidnight(nowMs: number) {
+  const dayMs = 24 * 60 * 60 * 1000
+  const jstOffsetMs = 9 * 60 * 60 * 1000
+  const elapsedTodayJst = (nowMs + jstOffsetMs) % dayMs
+  const remainingMs = dayMs - elapsedTodayJst
+  return Math.max(1000, remainingMs)
+}
 
 export default function HomePage() {
   const { currentUser, userData, refreshUserData } = useAuth()
@@ -43,10 +58,15 @@ export default function HomePage() {
     radioEnabled: false,
     executiveQAEnabled: false,
   })
+  const [, setStreakInfo] = useState<{ streak: number; bonus: number; newBadge: string | null } | null>(null)
   const [notificationsLoading, setNotificationsLoading] = useState(true)
   const [tasksLoading, setTasksLoading] = useState(true)
   const [missionsLoading, setMissionsLoading] = useState(true)
   const [totalUnreadCount, setTotalUnreadCount] = useState(0)
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  const [todayJst, setTodayJst] = useState(() => getJstDateString(Date.now()))
+  const [tetrisNeedsAttention, setTetrisNeedsAttention] = useState(false)
+  const [streakMilestones, setStreakMilestones] = useState<Record<number, number>>(STREAK_MILESTONES)
 
   // Subscribe to feature toggles
   useEffect(() => {
@@ -63,6 +83,53 @@ export default function HomePage() {
     })
     return () => unsubscribe()
   }, [])
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(doc(db, 'config', 'loginBonus'), (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data() as { streakMilestones?: Record<string, number> }
+        const nextMilestones = Object.entries(data.streakMilestones || {}).reduce<Record<number, number>>((acc, [key, value]) => {
+          const day = Number(key)
+          if (Number.isFinite(day) && typeof value === 'number') {
+            acc[day] = value
+          }
+          return acc
+        }, {})
+        if (Object.keys(nextMilestones).length > 0) {
+          setStreakMilestones(nextMilestones)
+        }
+      }
+    })
+    return () => unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    const updateNow = () => {
+      setNowMs(Date.now())
+    }
+
+    updateNow()
+    const intervalId = window.setInterval(updateNow, 60 * 1000)
+    return () => window.clearInterval(intervalId)
+  }, [])
+
+  useEffect(() => {
+    let timeoutId: number
+
+    const scheduleNext = () => {
+      const now = Date.now()
+      setTodayJst(getJstDateString(now))
+      timeoutId = window.setTimeout(scheduleNext, getMsUntilNextJstMidnight(now))
+    }
+
+    scheduleNext()
+    return () => window.clearTimeout(timeoutId)
+  }, [])
+
+  useEffect(() => {
+    const lastOpened = window.localStorage.getItem('hatofes:last-opened-tetris')
+    setTetrisNeedsAttention(lastOpened !== todayJst)
+  }, [todayJst])
 
   // Fetch notifications with server-side filtering (optimized with subcollection)
   useEffect(() => {
@@ -197,11 +264,6 @@ export default function HomePage() {
         setMissionsLoading(false)
         CacheService.set('missions', missionList, 5 * 60 * 1000) // Cache for 5 minutes
 
-        // Check login bonus availability (JST date, matching Cloud Function logic)
-        const now = new Date()
-        const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000)
-        const today = jst.toISOString().split('T')[0]
-        setLoginBonusAvailable(userData.lastLoginDate !== today)
       } catch (error) {
         console.error('Error fetching tasks/missions:', error)
       } finally {
@@ -213,6 +275,11 @@ export default function HomePage() {
     fetchTasksAndMissions()
   }, [currentUser, userData])
 
+  useEffect(() => {
+    if (!userData) return
+    setLoginBonusAvailable(userData.lastLoginDate !== todayJst)
+  }, [userData, todayJst])
+
   // Handle login bonus claim
   const handleClaimLoginBonus = async () => {
     if (!currentUser || !userData || claimingBonus || !loginBonusAvailable) return
@@ -220,12 +287,20 @@ export default function HomePage() {
     setClaimingBonus(true)
     try {
       const { awardLoginBonus } = await import('@/lib/pointService')
+      hapticMedium()
       const result = await awardLoginBonus()
       if (result.success && result.points) {
+        const data = result as { success: boolean; points: number; streak?: number; streakBonus?: number; newBadge?: string | null }
+        const streak = data.streak || 1
+        const streakBonus = data.streakBonus || 0
+        const reason = streakBonus > 0
+          ? `ログインボーナス + ${streak}日連続ボーナス🔥（＋1🎫チケット）`
+          : '本日のログインボーナス（＋1🎫チケット）'
         setRewardPoints(result.points)
-        setRewardReason('本日のログインボーナス（＋1🎫チケット）')
+        setRewardReason(reason)
         setShowRewardModal(true)
         setLoginBonusAvailable(false)
+        setStreakInfo({ streak, bonus: streakBonus, newBadge: data.newBadge || null })
         refreshUserData?.()
       }
     } catch (error) {
@@ -307,7 +382,104 @@ export default function HomePage() {
   const isAdmin = userData.role === 'admin' || userData.role === 'staff'
   const incompleteTasks = tasks.filter(t => !t.isAnswered).length
   const incompleteMissions = missions.filter(m => !m.isAnswered).length
-
+  const nextResetAt = getMsUntilNextJstMidnight(nowMs)
+  const resetHours = Math.floor(nextResetAt / (1000 * 60 * 60))
+  const resetMinutes = Math.floor((nextResetAt % (1000 * 60 * 60)) / (1000 * 60))
+  const level = calculateLevel(userData.totalPoints)
+  const progress = getPointsToNextLevel(userData.totalPoints)
+  const title = LEVEL_TITLES[level]
+  const colors = LEVEL_COLORS[level]
+  const quickLinks = [
+    {
+      to: '/notifications',
+      label: '通知',
+      note: totalUnreadCount > 0 ? `${totalUnreadCount}件の未読` : '新着を確認',
+      icon: <BellIcon size={24} />,
+      iconTone: 'bg-hatofes-accent-yellow/12 text-hatofes-accent-yellow',
+      badge: totalUnreadCount > 0 ? totalUnreadCount : null,
+      visible: true,
+    },
+    {
+      to: '/tasks',
+      label: 'Task',
+      note: incompleteTasks > 0 ? `${incompleteTasks}件が未回答` : '全員対象のタスク',
+      icon: <TaskIcon size={24} />,
+      iconTone: 'bg-emerald-500/12 text-emerald-300',
+      badge: incompleteTasks > 0 ? incompleteTasks : null,
+      visible: true,
+    },
+    {
+      to: '/missions',
+      label: 'Mission',
+      note: incompleteMissions > 0 ? `${incompleteMissions}件が未完了` : '自由参加ミッション',
+      icon: <MissionIcon size={24} />,
+      iconTone: 'bg-sky-500/12 text-sky-300',
+      badge: incompleteMissions > 0 ? incompleteMissions : null,
+      visible: true,
+    },
+    {
+      to: '/gacha',
+      label: 'ガチャ',
+      note: 'チケットで抽選',
+      icon: <GachaIcon size={26} />,
+      iconTone: 'bg-fuchsia-500/12 text-fuchsia-300',
+      badge: (userData.gachaTickets ?? 0) > 0 ? userData.gachaTickets : null,
+      visible: true,
+    },
+    {
+      to: '/tetris',
+      label: 'テトリス',
+      note: '行消しでポイント獲得',
+      icon: <TetrisIcon size={26} />,
+      iconTone: 'bg-cyan-500/12 text-cyan-300',
+      badge: tetrisNeedsAttention ? '!' : null,
+      visible: userData.role !== 'teacher',
+    },
+    {
+      to: '/gacha/collection',
+      label: '図鑑',
+      note: 'コレクション進捗',
+      icon: <GachaIcon size={26} />,
+      iconTone: 'bg-violet-500/12 text-violet-300',
+      badge: null,
+      visible: true,
+    },
+    {
+      to: '/radio',
+      label: '鳩ラジ',
+      note: '校内ラジオを聴く',
+      icon: <RadioIcon size={26} gradient={false} color="#EF4444" />,
+      iconTone: 'bg-red-500/12 text-red-300',
+      badge: null,
+      visible: featureToggles.radioEnabled,
+    },
+    {
+      to: '/executive',
+      label: '三役Q&A',
+      note: '三役に質問しよう',
+      icon: <QAIcon size={26} gradient={false} color="#A855F7" />,
+      iconTone: 'bg-purple-500/12 text-purple-300',
+      badge: null,
+      visible: featureToggles.executiveQAEnabled,
+    },
+  ].filter(link => link.visible)
+  const supportLinks = [
+    featureToggles.boothsEnabled
+      ? { to: '/booths', emoji: '🏪', title: 'ブース一覧', note: '出展情報を見る' }
+      : null,
+    featureToggles.eventsEnabled
+      ? { to: '/events', emoji: '📅', title: 'スケジュール', note: 'イベント情報' }
+      : null,
+    featureToggles.boothsEnabled
+      ? { to: '/stamp-rally', emoji: '🗺️', title: 'スタンプラリー', note: 'ブースを巡ろう' }
+      : null,
+    { to: '/live-challenge', emoji: '⚡', title: 'タイムアタック', note: 'クラス対抗チャレンジ' },
+  ].filter(Boolean) as { to: string; emoji: string; title: string; note: string }[]
+  const redBadgeClass = 'inline-flex min-w-[1.35rem] items-center justify-center rounded-full bg-[#e24d4d] px-1.5 text-[11px] font-bold text-white'
+  const featuredNotifications = [
+    ...notifications.filter(item => item.isImportant),
+    ...notifications.filter(item => !item.isImportant),
+  ].slice(0, 3)
   return (
     <>
       {/* Login Bonus Reward Modal */}
@@ -318,441 +490,486 @@ export default function HomePage() {
         onClose={() => setShowRewardModal(false)}
       />
 
-      <div className="min-h-screen bg-hatofes-bg pb-20">
+      <div className="home-dashboard min-h-screen theme-bg pb-16">
         <AppHeader
           username={userData.username}
           grade={userData.grade}
           classNumber={userData.class}
         />
 
-        <main ref={mainRef} className="max-w-lg mx-auto px-4 py-6 space-y-6">
-          {/* Countdown Timer */}
-          <div className="animate-card opacity-0">
-            <CountdownTimer variant="default" />
-          </div>
+        <main ref={mainRef} className="mx-auto max-w-7xl px-3 pb-8 pt-3 sm:px-4 lg:px-6">
+          <section className="home-panel overflow-hidden rounded-[1.35rem] px-3 py-3 text-white shadow-[0_30px_80px_rgba(16,22,26,0.22)] sm:rounded-[1.6rem] sm:px-5 sm:py-4 lg:px-6 lg:py-6">
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,1.55fr)_360px]">
+              <div className="space-y-5">
+                <section className="home-card animate-card opacity-0 rounded-[1.25rem] p-3 sm:p-5">
+                  <div className="flex flex-col gap-3 sm:gap-4">
+                    <div className="flex flex-col gap-3 sm:gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div>
+                        <p className="text-[11px] font-din uppercase tracking-[0.32em] text-white/45">Overview</p>
+                        <h1 className="mt-2 text-2xl font-medium leading-tight sm:text-4xl">
+                          Welcome, <span className="font-bold">{userData.username}</span>
+                        </h1>
+                      </div>
 
-          {/* Admin Banner */}
-          {isAdmin && (
-            <Link to="/admin" className="block animate-card opacity-0">
-              <div className="bg-gradient-to-r from-hatofes-accent-yellow/20 to-hatofes-accent-yellow/10 border border-hatofes-accent-yellow/50 rounded-lg p-4 flex items-center justify-between hover:from-hatofes-accent-yellow/30 hover:to-hatofes-accent-yellow/20 transition-all">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-hatofes-accent-yellow/20 flex items-center justify-center">
-                    <svg className="w-5 h-5 text-hatofes-accent-yellow" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-hatofes-white font-bold text-sm">管理者パネル</p>
-                    <p className="text-hatofes-gray text-xs">ポイント管理・アンケート作成</p>
-                  </div>
-                </div>
-                <svg className="w-5 h-5 text-hatofes-accent-yellow" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-              </div>
-            </Link>
-          )}
-
-          {/* Point Meter - Clickable */}
-          <Link to="/point" className="block animate-card opacity-0">
-            <section className="card card-glow hover:ring-1 hover:ring-hatofes-accent-yellow transition-all">
-              <p className="text-lg text-hatofes-white text-center mb-3 font-bold">現在の鳩ポイント</p>
-
-              {/* Orange gradient border box */}
-              <div
-                className="rounded-lg p-4 mb-2"
-                style={{
-                  background: 'linear-gradient(135deg, rgba(255,195,0,0.12), rgba(255,78,0,0.12))',
-                  border: '2px solid transparent',
-                  backgroundImage: 'linear-gradient(var(--color-bg-card), var(--color-bg-card)), linear-gradient(135deg, #FFC300, #FF4E00)',
-                  backgroundOrigin: 'border-box',
-                  backgroundClip: 'padding-box, border-box',
-                }}
-              >
-                  <div className="flex items-baseline justify-center">
-                    <span ref={pointRef} className="font-display text-5xl font-bold text-gradient">
-                      <AnimatedNumber value={userData.totalPoints} duration={1200} />
-                    </span>
-                    <span className="text-xl ml-1 text-hatofes-gray-light font-display">pt</span>
-                  </div>
-                </div>
-
-              <div className="flex items-center justify-between text-xs text-hatofes-gray">
-                <span className="flex items-center gap-1">
-                  <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                  リアルタイム同期中
-                </span>
-                <span className="text-hatofes-accent-yellow font-din tracking-wide flex items-center gap-1">
-                  Show detail
-                  <ChevronIcon size={14} color="#FFC300" />
-                </span>
-              </div>
-            </section>
-          </Link>
-
-          {/* Level Display */}
-          {(() => {
-            const level = calculateLevel(userData.totalPoints)
-            const progress = getPointsToNextLevel(userData.totalPoints)
-            const title = LEVEL_TITLES[level]
-            const colors = LEVEL_COLORS[level]
-
-            return (
-              <Link to="/level" className="block animate-card opacity-0">
-                <section className="card hover:ring-1 hover:ring-hatofes-accent-yellow transition-all">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-3">
-                      <span
-                        className="text-2xl font-bold font-display"
-                        style={{
-                          background: `linear-gradient(135deg, ${colors.from}, ${colors.to})`,
-                          WebkitBackgroundClip: 'text',
-                          WebkitTextFillColor: 'transparent',
-                          backgroundClip: 'text',
-                        }}
-                      >
-                        Lv.{level}
-                      </span>
-                      <span
-                        className="text-sm font-bold font-display tracking-wide"
-                        style={{
-                          background: `linear-gradient(90deg, ${colors.from}, ${colors.to})`,
-                          WebkitBackgroundClip: 'text',
-                          WebkitTextFillColor: 'transparent',
-                          backgroundClip: 'text',
-                        }}
-                      >
-                        {title}
-                      </span>
+                      <div className="home-subcard rounded-[1rem] p-2 lg:min-w-[360px]">
+                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                          <div className="home-subcard flex min-h-[84px] flex-col justify-center rounded-[0.8rem] px-3 py-3 text-center">
+                            <p className="text-[10px] font-din uppercase tracking-[0.25em] text-white/35">Grade</p>
+                            <p className="mt-2 text-base font-semibold">{userData.grade}年</p>
+                          </div>
+                          <div className="home-subcard flex min-h-[84px] flex-col justify-center rounded-[0.8rem] px-3 py-3 text-center">
+                            <p className="text-[10px] font-din uppercase tracking-[0.25em] text-white/35">Class</p>
+                            <p className="mt-2 text-base font-semibold">{userData.class}組</p>
+                          </div>
+                          <div className="home-subcard flex min-h-[84px] flex-col items-center justify-center rounded-[0.8rem] px-3 py-3 text-center">
+                            <p className="text-[10px] font-din uppercase tracking-[0.25em] text-white/35">Role</p>
+                            <div className="mt-2 flex justify-center">
+                              <RoleBadge role={userData.role} department={userData.department} size="sm" />
+                            </div>
+                          </div>
+                          <div className="home-subcard flex min-h-[84px] flex-col justify-center rounded-[0.8rem] px-3 py-3 text-center">
+                            <p className="text-[10px] font-din uppercase tracking-[0.25em] text-white/35">Tickets</p>
+                            <p className="mt-2 text-base font-semibold">{userData.gachaTickets ?? 0}</p>
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                    <span className="text-hatofes-gray text-xs font-din tracking-wide flex items-center gap-1">
-                      Show detail
-                      <ChevronIcon size={14} color="#6B7280" />
-                    </span>
-                  </div>
-                  {progress && (
-                    <div className="w-full h-3 bg-hatofes-dark rounded-full overflow-hidden">
-                      <div
-                        className="h-full rounded-full animate-level-bar"
-                        style={{
-                          '--bar-width': `${progress.progress}%`,
-                          background: `linear-gradient(90deg, ${colors.from}, ${colors.to})`,
-                        } as React.CSSProperties}
-                      />
-                    </div>
-                  )}
-                </section>
-              </Link>
-            )
-          })()}
 
-          {/* Login Bonus - 常に表示、状態で見た目を変更 */}
-          <section className={`card animate-card opacity-0 ${
-            loginBonusAvailable
-              ? 'border border-hatofes-accent-yellow/40 bg-gradient-to-r from-hatofes-accent-yellow/10 to-transparent animate-pulse-border'
-              : 'border border-gray-600/40 bg-gradient-to-r from-gray-600/5 to-transparent'
-          }`}>
-            <button
-              onClick={loginBonusAvailable ? handleClaimLoginBonus : undefined}
-              disabled={claimingBonus || !loginBonusAvailable}
-              className="w-full flex items-center justify-between group cursor-pointer disabled:cursor-not-allowed"
-            >
-              <div className="flex items-center gap-3">
-                <span className={`text-2xl ${loginBonusAvailable ? 'group-hover:scale-110 transition-transform' : 'opacity-50'}`}>
-                  {loginBonusAvailable ? '🎁' : '✓'}
-                </span>
-                <div className="text-left">
-                  <p className={`font-bold text-sm ${loginBonusAvailable ? 'text-hatofes-white' : 'text-hatofes-gray'}`}>
-                    {loginBonusAvailable ? '今日のログインボーナス' : '本日のログインボーナス'}
-                  </p>
-                  <p className="text-xs text-hatofes-gray">
-                    {claimingBonus
-                      ? '受け取り中...'
-                      : loginBonusAvailable
-                        ? '1日1回のボーナスを受け取る'
-                        : '受け取り済み（明日また来てね！）'
-                    }
-                  </p>
-                </div>
-              </div>
-              {loginBonusAvailable && (
-                <span className="point-badge group-hover:scale-105 transition-transform">10pt＋🎫</span>
-              )}
-              {!loginBonusAvailable && (
-                <span className="text-xs text-green-400 flex items-center gap-1">
-                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                  </svg>
-                  受取済み
-                </span>
-              )}
-            </button>
-          </section>
-
-          {/* Notifications */}
-          <section className="card animate-card opacity-0">
-            <div className="flex justify-between items-center mb-4">
-              <div className="flex items-center gap-2">
-                <BellIcon size={20} />
-                <h2 className="font-bold text-hatofes-white">新着通知</h2>
-              </div>
-              {totalUnreadCount > 0 && (
-                <span className="notification-badge">{totalUnreadCount}</span>
-              )}
-            </div>
-
-            {notificationsLoading ? (
-              <div className="flex justify-center py-4"><Spinner size="md" /></div>
-            ) : notifications.length === 0 ? (
-              <p className="text-sm text-hatofes-gray text-center py-4">通知はありません</p>
-            ) : (
-              <ul className="space-y-2">
-                {notifications.slice(0, 3).map((item) => (
-                  <li key={item.id}>
-                    <Link
-                      to={`/notifications/${item.id}`}
-                      onClick={() => markAsRead(item.id)}
-                      className="flex items-center justify-between py-2 px-2 -mx-2 rounded-lg hover:bg-hatofes-dark transition-colors"
-                    >
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          {!item.isRead && (
-                            <span className="w-2 h-2 bg-hatofes-accent-orange rounded-full flex-shrink-0" />
-                          )}
-                          <span className={`text-sm truncate ${item.isRead ? 'text-hatofes-gray' : 'text-hatofes-white font-bold'}`}>
-                            {item.title}
+                    <div className="grid gap-3 sm:gap-4 md:grid-cols-[minmax(0,1.15fr)_minmax(220px,0.85fr)]">
+                      <Link to="/point" className="home-card rounded-[1.1rem] p-4 text-white transition-transform hover:-translate-y-0.5">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-[11px] font-din uppercase tracking-[0.25em] text-white/42">Points Balance</p>
+                            <div className="mt-4 flex items-end gap-2">
+                              <span
+                                ref={pointRef}
+                                className="font-display text-4xl font-bold leading-none sm:text-6xl"
+                                style={{
+                                  background: 'linear-gradient(135deg, #FFC300, #FF7A18)',
+                                  WebkitBackgroundClip: 'text',
+                                  WebkitTextFillColor: 'transparent',
+                                  backgroundClip: 'text',
+                                }}
+                              >
+                                <AnimatedNumber value={userData.totalPoints} duration={1200} />
+                              </span>
+                              <span className="pb-1 text-lg font-display text-white/52">pt</span>
+                            </div>
+                          </div>
+                          <span className="flex items-center gap-1 text-[11px] font-din uppercase tracking-[0.2em] text-white/46">
+                            Detail
+                            <ChevronIcon size={14} color="#D1D5DB" />
                           </span>
                         </div>
-                        {item.senderName && (
-                          <p className="text-xs text-hatofes-gray mt-0.5 ml-4 font-display">by {item.senderName}</p>
-                        )}
+                        <div className="mt-4 grid grid-cols-3 gap-2 sm:mt-5">
+                          <div className="home-subcard rounded-[0.95rem] px-3 py-3">
+                            <p className="text-[10px] font-din uppercase tracking-[0.22em] text-white/38">Unread</p>
+                            <p className="mt-2 text-lg font-semibold text-white sm:text-xl">{totalUnreadCount}</p>
+                          </div>
+                          <div className="home-subcard rounded-[0.95rem] px-3 py-3">
+                            <p className="text-[10px] font-din uppercase tracking-[0.22em] text-white/38">Task</p>
+                            <p className="mt-2 text-lg font-semibold text-white sm:text-xl">{incompleteTasks}</p>
+                          </div>
+                          <div className="home-subcard rounded-[0.95rem] px-3 py-3">
+                            <p className="text-[10px] font-din uppercase tracking-[0.22em] text-white/38">Mission</p>
+                            <p className="mt-2 text-lg font-semibold text-white sm:text-xl">{incompleteMissions}</p>
+                          </div>
+                        </div>
+                      </Link>
+
+                      <Link to="/level" className="home-card rounded-[1.1rem] p-4 transition-colors">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-[11px] font-din uppercase tracking-[0.25em] text-white/42">Level</p>
+                            <div className="mt-3 flex items-end gap-2">
+                              <p
+                                className="text-4xl font-black font-display leading-none sm:text-5xl"
+                                style={{
+                                  background: `linear-gradient(135deg, ${colors.from}, ${colors.to})`,
+                                  WebkitBackgroundClip: 'text',
+                                  WebkitTextFillColor: 'transparent',
+                                  backgroundClip: 'text',
+                                }}
+                              >
+                                Lv.{level}
+                              </p>
+                            </div>
+                            <p
+                              className="mt-2 text-[1.35rem] font-black font-display leading-none tracking-[0.08em] sm:text-[1.85rem]"
+                              style={{
+                                background: `linear-gradient(90deg, ${colors.from}, ${colors.to})`,
+                                WebkitBackgroundClip: 'text',
+                                WebkitTextFillColor: 'transparent',
+                                backgroundClip: 'text',
+                              }}
+                            >
+                              {title}
+                            </p>
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                              <span
+                                className="inline-flex rounded-full px-2.5 py-1 text-[11px] font-din uppercase tracking-[0.18em]"
+                                style={{ backgroundColor: `${colors.from}26`, color: colors.from }}
+                              >
+                                Title
+                              </span>
+                            </div>
+                          </div>
+                          <span className="flex items-center gap-1 text-[11px] font-din uppercase tracking-[0.2em] text-white/46">
+                            Detail
+                            <ChevronIcon size={14} color="#D1D5DB" />
+                          </span>
+                        </div>
+                        {progress ? (
+                          <>
+                            <div className="mt-6 h-2 overflow-hidden rounded-full bg-white/8">
+                              <div
+                                className="h-full rounded-full animate-level-bar"
+                                style={{
+                                  '--bar-width': `${progress.progress}%`,
+                                  background: `linear-gradient(90deg, ${colors.from}, ${colors.to})`,
+                                } as React.CSSProperties}
+                              />
+                            </div>
+                            <p className="mt-2 text-xs text-white/48">
+                              次のレベルまで {progress.next - progress.current}pt
+                            </p>
+                          </>
+                        ) : null}
+                      </Link>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="animate-card opacity-0">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div>
+                      <p className="text-[11px] font-din uppercase tracking-[0.25em] text-white/42">News Desk</p>
+                      <h2 className="mt-2 text-lg font-semibold text-white">重要なお知らせ</h2>
+                    </div>
+                    <span className="rounded-full bg-white/[0.06] px-3 py-1 text-[11px] font-din uppercase tracking-[0.2em] text-white/48">
+                      Priority
+                    </span>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+                    {Array.from({ length: 3 }).map((_, index) => {
+                      const item = featuredNotifications[index] ?? null
+                      if (!item) {
+                        return (
+                          <div key={`empty-${index}`} className="home-card min-h-[88px] rounded-[1rem] p-4 text-sm text-white/44">
+                            準備中
+                          </div>
+                        )
+                      }
+                      return (
+                        <Link
+                          key={item.id}
+                          to={`/notifications/${item.id}`}
+                          onClick={() => markAsRead(item.id)}
+                          className="home-card min-h-[88px] rounded-[1rem] p-4 transition-colors hover:bg-white/[0.06]"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="line-clamp-2 text-sm font-semibold text-white">{item.title}</p>
+                              {item.senderName ? (
+                                <p className="mt-2 text-xs text-white/42">by {item.senderName}</p>
+                              ) : null}
+                            </div>
+                            {!item.isRead ? <span className={redBadgeClass}>!</span> : null}
+                          </div>
+                        </Link>
+                      )
+                    })}
+                  </div>
+                </section>
+
+                <section className="home-card animate-card opacity-0 rounded-[1.1rem] p-4 sm:p-5">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-din uppercase tracking-[0.25em] text-white/42">Beta Feedback</p>
+                      <h2 className="mt-2 text-lg font-semibold text-white">要望・バグ報告</h2>
+                      <p className="mt-2 text-sm text-white/52">
+                        ベータ版で気づいた不具合や、追加してほしい機能を送れます。
+                      </p>
+                    </div>
+                    <Link
+                      to="/settings"
+                      className="inline-flex h-11 items-center justify-center rounded-[1rem] bg-[#e24d4d] px-4 text-sm font-medium text-white transition-colors hover:opacity-90"
+                    >
+                      フォームを開く
+                    </Link>
+                  </div>
+                </section>
+
+                <section className="animate-card opacity-0">
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                    {quickLinks.map(link => (
+                      <Link
+                        key={link.to}
+                        to={link.to}
+                        className="home-card flex aspect-square min-h-[132px] flex-col rounded-[1rem] p-3 transition-all hover:-translate-y-0.5 hover:bg-white/[0.06] md:aspect-auto md:min-h-0 md:p-4"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <span className={`flex h-12 w-12 items-center justify-center rounded-[0.9rem] ${link.iconTone} sm:h-11 sm:w-11`}>
+                            {link.icon}
+                          </span>
+                          {link.badge ? <span className={redBadgeClass}>{link.badge}</span> : null}
+                        </div>
+                        <div className="mt-auto pt-3">
+                          <p className="text-sm font-semibold text-white">{link.label}</p>
+                          <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-white/48 md:text-xs md:leading-5">{link.note}</p>
+                        </div>
+                      </Link>
+                    ))}
+                  </div>
+                </section>
+
+                <div className="grid gap-4 lg:grid-cols-2 lg:gap-5">
+                  <section className="home-card animate-card opacity-0 rounded-[1.1rem] p-4 sm:p-5">
+                    <div className="mb-4 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <TaskIcon size={20} />
+                        <div>
+                          <h2 className="font-display text-lg font-semibold text-white">Task</h2>
+                          <p className="text-xs text-white/48">全員対象のタスク</p>
+                        </div>
                       </div>
-                      <ChevronIcon size={16} color="#6B7280" />
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
+                      {incompleteTasks > 0 ? <span className={redBadgeClass}>{incompleteTasks}</span> : null}
+                    </div>
 
-            <ViewMoreButton to="/notifications" />
-          </section>
+                    {tasksLoading ? (
+                      <div className="flex justify-center py-8"><Spinner size="md" /></div>
+                    ) : (
+                      <ul className="space-y-2">
+                        {tasks.slice(0, 5).map(task => (
+                          <li key={task.id} className={task.isAnswered ? 'opacity-60' : ''}>
+                            <Link
+                              to={`/tasks/${task.id}`}
+                              className="home-subcard flex items-center justify-between gap-3 rounded-[0.95rem] px-4 py-3 transition-colors hover:bg-white/[0.06]"
+                            >
+                              <span className={`min-w-0 flex-1 truncate text-sm ${task.isAnswered ? 'text-white/35 line-through' : 'text-white'}`}>
+                                {task.title}
+                              </span>
+                              <PointBadge points={task.points} completed={task.isAnswered} size="sm" />
+                            </Link>
+                          </li>
+                        ))}
+                        {tasks.length === 0 ? <li className="home-subcard rounded-[0.95rem] py-8 text-center text-sm text-white/44">タスクはありません</li> : null}
+                      </ul>
+                    )}
 
-          {/* Tasks Section */}
-          <section className="card animate-card opacity-0">
-            <div className="flex justify-between items-center mb-4">
-              <div className="flex items-center gap-2">
-                <TaskIcon size={20} />
-                <h2 className="font-bold text-hatofes-white font-display">Task</h2>
+                    <ViewMoreButton to="/tasks" />
+                  </section>
+
+                  <section className="home-card animate-card opacity-0 rounded-[1.1rem] p-4 sm:p-5">
+                    <div className="mb-4 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <MissionIcon size={20} />
+                        <div>
+                          <h2 className="font-display text-lg font-semibold text-white">Mission</h2>
+                          <p className="text-xs text-white/48">任意参加のミッション</p>
+                        </div>
+                      </div>
+                      {incompleteMissions > 0 ? <span className={redBadgeClass}>{incompleteMissions}</span> : null}
+                    </div>
+
+                    {missionsLoading ? (
+                      <div className="flex justify-center py-8"><Spinner size="md" /></div>
+                    ) : (
+                      <ul className="space-y-2">
+                        {missions.slice(0, 5).map(mission => (
+                          <li key={mission.id} className={mission.isAnswered ? 'opacity-60' : ''}>
+                            <Link
+                              to={`/missions/${mission.id}`}
+                              className="home-subcard flex items-center justify-between gap-3 rounded-[0.95rem] px-4 py-3 transition-colors hover:bg-white/[0.06]"
+                            >
+                              <span className={`min-w-0 flex-1 truncate text-sm ${mission.isAnswered ? 'text-white/35 line-through' : 'text-white'}`}>
+                                {mission.title}
+                              </span>
+                              <PointBadge points={mission.points} completed={mission.isAnswered} size="sm" />
+                            </Link>
+                          </li>
+                        ))}
+                        {missions.length === 0 ? <li className="home-subcard rounded-[0.95rem] py-8 text-center text-sm text-white/44">ミッションはありません</li> : null}
+                      </ul>
+                    )}
+
+                    <ViewMoreButton to="/missions" />
+                  </section>
+                </div>
               </div>
-              {incompleteTasks > 0 && (
-                <span className="notification-badge">{incompleteTasks}</span>
-              )}
-            </div>
-            <p className="text-xs text-hatofes-gray mb-3">全員対象のタスクです</p>
 
-            {tasksLoading ? (
-              <div className="flex justify-center py-4"><Spinner size="md" /></div>
-            ) : (
-              <ul className="space-y-2">
-                {tasks.slice(0, 5).map((task) => (
-                  <li key={task.id} className={task.isAnswered ? 'opacity-60' : ''}>
-                    <Link
-                      to={`/tasks/${task.id}`}
-                      className="flex items-center justify-between py-2 px-2 -mx-2 rounded-lg hover:bg-hatofes-dark transition-colors"
-                    >
-                      <span className={`text-sm truncate flex-1 ${task.isAnswered ? 'text-hatofes-gray line-through' : 'text-hatofes-white'}`}>
-                        {task.title}
-                      </span>
-                      <PointBadge points={task.points} completed={task.isAnswered} size="sm" />
-                    </Link>
-                  </li>
-                ))}
-                {tasks.length === 0 && (
-                  <li className="text-sm text-hatofes-gray text-center py-2">タスクはありません</li>
-                )}
-              </ul>
-            )}
+              <div className="min-w-0 space-y-4 sm:space-y-5">
+                <section className="home-card animate-card min-w-0 overflow-hidden opacity-0 rounded-[1.1rem] p-4 sm:p-5">
+                  <div className="mb-4 flex items-center justify-between">
+                    <div>
+                      <p className="text-[11px] font-din uppercase tracking-[0.25em] text-white/42">Countdown</p>
+                      <h2 className="mt-2 text-lg font-semibold text-white">鳩祭タイマー</h2>
+                    </div>
+                    <span className="rounded-full bg-white/[0.06] px-3 py-1 text-[10px] font-din uppercase tracking-[0.22em] text-white/45">
+                      Live
+                    </span>
+                  </div>
+                  <div className="sm:hidden">
+                    <CountdownTimer variant="compact" className="!bg-transparent" />
+                  </div>
+                  <div className="hidden sm:block">
+                    <CountdownTimer variant="default" className="!bg-transparent" />
+                  </div>
+                </section>
 
-            <ViewMoreButton to="/tasks" />
-          </section>
+                <section className={`animate-card min-w-0 overflow-hidden opacity-0 rounded-[1.1rem] p-4 sm:p-5 ${loginBonusAvailable ? 'bg-[#f4efe5] text-[#11161a]' : 'home-card'}`}>
+                  <button
+                    onClick={loginBonusAvailable ? handleClaimLoginBonus : undefined}
+                    disabled={claimingBonus || !loginBonusAvailable}
+                    className="w-full text-left"
+                  >
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0 flex items-start gap-3">
+                        <div className={`flex h-11 w-11 items-center justify-center rounded-[0.95rem] text-2xl ${loginBonusAvailable ? 'bg-[#11161a]/8' : 'home-subcard'}`}>
+                          {loginBonusAvailable ? '🎁' : '✓'}
+                        </div>
+                        <div className="min-w-0">
+                          <p className={`text-[11px] font-din uppercase tracking-[0.25em] ${loginBonusAvailable ? 'text-[#11161a]/42' : 'text-white/42'}`}>Daily Bonus</p>
+                          <p className={`mt-2 text-lg font-semibold ${loginBonusAvailable ? 'text-[#11161a]' : 'text-white'}`}>
+                            {loginBonusAvailable ? '今日のログボ受取可能' : '本日のログボ受取済み'}
+                          </p>
+                          <p className={`mt-1 break-words text-xs ${loginBonusAvailable ? 'text-[#11161a]/50' : 'text-white/48'}`}>
+                            {claimingBonus ? '受け取り中...' : `毎日 0:00 更新 / あと ${resetHours}h ${resetMinutes}m`}
+                          </p>
+                        </div>
+                      </div>
+                      {loginBonusAvailable ? (
+                        <span className="point-badge self-start sm:self-auto">10pt＋🎫</span>
+                      ) : (
+                        <span className="home-subcard self-start rounded-full px-3 py-1 text-[11px] font-bold text-emerald-300 sm:self-auto">
+                          Claimed
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                </section>
 
-          {/* Missions Section */}
-          <section className="card animate-card opacity-0">
-            <div className="flex justify-between items-center mb-4">
-              <div className="flex items-center gap-2">
-                <MissionIcon size={20} />
-                <h2 className="font-bold text-hatofes-white font-display">Mission</h2>
+                <section className="home-card animate-card min-w-0 overflow-hidden opacity-0 rounded-[1.1rem] p-4 sm:p-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-din uppercase tracking-[0.25em] text-white/42">Login Streak</p>
+                      <p className="mt-2 text-lg font-semibold text-white">
+                        {(userData.loginStreak ?? 0) > 1 ? `${userData.loginStreak}日連続ログイン中` : '今日からストリーク開始'}
+                      </p>
+                      <p className="mt-1 break-words text-xs text-white/48">
+                        {(() => {
+                          const streak = userData.loginStreak ?? 0
+                          const milestones = Object.keys(streakMilestones).map(Number).sort((a, b) => a - b)
+                          const next = milestones.find(m => m > streak)
+                          if (next) {
+                            return `次のボーナスまであと${next - streak}日（${next}日で+${streakMilestones[next]}pt）`
+                          }
+                          return 'マックスストリーク達成中'
+                        })()}
+                      </p>
+                    </div>
+                    <span className="font-display text-3xl font-bold text-gradient">{userData.loginStreak ?? 1}</span>
+                  </div>
+                </section>
+
+                <section className="home-card animate-card min-w-0 overflow-hidden opacity-0 rounded-[1.1rem] p-4 sm:p-5">
+                  <div className="mb-4 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <BellIcon size={20} />
+                      <div>
+                        <h2 className="font-semibold text-white">新着通知</h2>
+                        <p className="text-xs text-white/48">最新の連絡</p>
+                      </div>
+                    </div>
+                    {totalUnreadCount > 0 ? <span className={redBadgeClass}>{totalUnreadCount}</span> : null}
+                  </div>
+
+                  {notificationsLoading ? (
+                    <div className="flex justify-center py-8"><Spinner size="md" /></div>
+                  ) : notifications.length === 0 ? (
+                    <p className="home-subcard rounded-[0.95rem] py-8 text-center text-sm text-white/44">通知はありません</p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {notifications.slice(0, 3).map(item => (
+                        <li key={item.id}>
+                          <Link
+                            to={`/notifications/${item.id}`}
+                            onClick={() => markAsRead(item.id)}
+                            className="home-subcard flex items-center justify-between gap-3 rounded-[0.95rem] px-4 py-3 transition-colors hover:bg-white/[0.06]"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                {!item.isRead ? <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full bg-[#f4d45e]" /> : null}
+                                <span className={`truncate text-sm ${item.isRead ? 'text-white/42' : 'font-semibold text-white'}`}>
+                                  {item.title}
+                                </span>
+                              </div>
+                              {item.senderName ? <p className="mt-1 pl-4 text-xs text-white/42">by {item.senderName}</p> : null}
+                            </div>
+                            <ChevronIcon size={16} color="#A3A3A3" />
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  <ViewMoreButton to="/notifications" />
+                </section>
+
+                <section className="home-card animate-card min-w-0 overflow-hidden opacity-0 rounded-[1.1rem] p-4 sm:p-5">
+                  <div className="mb-4">
+                    <h2 className="font-semibold text-white">Festival Access</h2>
+                    <p className="text-xs text-white/48">当日機能と特設導線</p>
+                  </div>
+                  <div className="space-y-2">
+                    {supportLinks.map(link => (
+                      <Link
+                        key={link.to}
+                        to={link.to}
+                        className="home-subcard flex items-center gap-3 rounded-[0.95rem] px-4 py-3 transition-colors hover:bg-white/[0.06]"
+                      >
+                        <span className="text-2xl">{link.emoji}</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold text-white">{link.title}</p>
+                          <p className="text-xs text-white/48">{link.note}</p>
+                        </div>
+                        <ChevronIcon size={16} color="#A3A3A3" />
+                      </Link>
+                    ))}
+                    {supportLinks.length === 0 ? (
+                      <div className="home-subcard rounded-[0.95rem] py-8 text-center text-sm text-white/44">
+                        当日機能はまだ公開されていません
+                      </div>
+                    ) : null}
+                  </div>
+                </section>
+
+                {isAdmin ? (
+                  <Link to="/admin" className="block animate-card opacity-0">
+                    <div className="rounded-[1.1rem] bg-[#f4efe5] p-4 text-[#11161a] transition-transform hover:-translate-y-0.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-11 w-11 items-center justify-center rounded-[0.95rem] bg-[#11161a]/8">
+                            <svg className="h-5 w-5 text-[#11161a]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                          </div>
+                          <div>
+                            <p className="text-sm font-semibold">管理者パネル</p>
+                            <p className="text-xs text-[#11161a]/52">{getRoleDisplayLabel(userData.role, userData.department)}として管理</p>
+                          </div>
+                        </div>
+                        <ChevronIcon size={18} color="#11161A" />
+                      </div>
+                    </div>
+                  </Link>
+                ) : null}
               </div>
-              {incompleteMissions > 0 && (
-                <span className="notification-badge">{incompleteMissions}</span>
-              )}
             </div>
-            <p className="text-xs text-hatofes-gray mb-3">任意参加のミッションです</p>
-
-            {missionsLoading ? (
-              <div className="flex justify-center py-4"><Spinner size="md" /></div>
-            ) : (
-              <ul className="space-y-2">
-                {missions.slice(0, 5).map((mission) => (
-                  <li key={mission.id} className={mission.isAnswered ? 'opacity-60' : ''}>
-                    <Link
-                      to={`/missions/${mission.id}`}
-                      className="flex items-center justify-between py-2 px-2 -mx-2 rounded-lg hover:bg-hatofes-dark transition-colors"
-                    >
-                      <span className={`text-sm truncate flex-1 ${mission.isAnswered ? 'text-hatofes-gray line-through' : 'text-hatofes-white'}`}>
-                        {mission.title}
-                      </span>
-                      <PointBadge points={mission.points} completed={mission.isAnswered} size="sm" />
-                    </Link>
-                  </li>
-                ))}
-                {missions.length === 0 && (
-                  <li className="text-sm text-hatofes-gray text-center py-2">ミッションはありません</li>
-                )}
-              </ul>
-            )}
-
-            <ViewMoreButton to="/missions" />
           </section>
-
-          {/* Festival Day Features - Conditional based on feature toggles */}
-          {(featureToggles.boothsEnabled || featureToggles.eventsEnabled) && (
-            <div className="grid grid-cols-2 gap-3">
-              {featureToggles.boothsEnabled && (
-                <Link to="/booths" className="card hover:ring-1 hover:ring-hatofes-accent-yellow transition-all">
-                  <div className="text-center py-2">
-                    <span className="text-3xl block mb-2">🏪</span>
-                    <p className="text-hatofes-white font-bold text-sm">ブース一覧</p>
-                    <p className="text-xs text-hatofes-gray">出展情報を見る</p>
-                  </div>
-                </Link>
-              )}
-              {featureToggles.eventsEnabled && (
-                <Link to="/events" className="card hover:ring-1 hover:ring-hatofes-accent-yellow transition-all">
-                  <div className="text-center py-2">
-                    <span className="text-3xl block mb-2">📅</span>
-                    <p className="text-hatofes-white font-bold text-sm">スケジュール</p>
-                    <p className="text-xs text-hatofes-gray">イベント情報</p>
-                  </div>
-                </Link>
-              )}
-            </div>
-          )}
-
-          {/* Radio Banner - Conditional */}
-          {featureToggles.radioEnabled && (
-            <Link to="/radio" className="block">
-              <section className="card hover:ring-1 hover:ring-red-500 transition-all bg-gradient-to-r from-red-500/10 to-orange-500/10 border-red-500/30">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(239, 68, 68, 0.15)' }}>
-                      <RadioIcon size={28} gradient={false} color="#EF4444" />
-                    </div>
-                    <div>
-                      <p className="text-hatofes-white font-bold">鳩ラジ</p>
-                      <p className="text-xs text-hatofes-gray">校内ラジオを聴く</p>
-                    </div>
-                  </div>
-                  <ChevronIcon size={20} color="#6B7280" />
-                </div>
-              </section>
-            </Link>
-          )}
-
-          {/* Gacha Banner */}
-          <Link to="/gacha" className="block animate-card opacity-0">
-            <section className="card hover:ring-1 hover:ring-hatofes-accent-yellow transition-all bg-gradient-to-r from-hatofes-accent-yellow/10 to-hatofes-accent-orange/10 border-hatofes-accent-yellow/30">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(255, 195, 0, 0.15)' }}>
-                    <GachaIcon size={28} />
-                  </div>
-                  <div>
-                    <p className="text-hatofes-white font-bold">ガチャガチャ</p>
-                    <p className="text-xs text-hatofes-gray">チケット残数: <span className="text-hatofes-accent-yellow font-bold">{userData.gachaTickets ?? 0}枚</span></p>
-                  </div>
-                </div>
-                <ChevronIcon size={20} color="#6B7280" />
-              </div>
-            </section>
-          </Link>
-
-          {/* Executive Q&A Banner - Conditional */}
-          {featureToggles.executiveQAEnabled && (
-            <Link to="/executive" className="block">
-              <section className="card hover:ring-1 hover:ring-purple-500 transition-all bg-gradient-to-r from-purple-500/10 to-indigo-500/10 border-purple-500/30">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(168, 85, 247, 0.15)' }}>
-                      <QAIcon size={28} gradient={false} color="#A855F7" />
-                    </div>
-                    <div>
-                      <p className="text-hatofes-white font-bold">三役Q&A</p>
-                      <p className="text-xs text-hatofes-gray">三役に質問しよう！</p>
-                    </div>
-                  </div>
-                  <ChevronIcon size={20} color="#6B7280" />
-                </div>
-              </section>
-            </Link>
-          )}
-
-          {/* Tetris Banner - 教員以外のみ表示 */}
-          {userData.role !== 'teacher' && (
-            <Link to="/tetris" className="block animate-card opacity-0">
-              <section className="card hover:ring-1 hover:ring-cyan-500 transition-all bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border-cyan-500/30">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(0, 212, 255, 0.15)' }}>
-                      <TetrisIcon size={28} />
-                    </div>
-                    <div>
-                      <p className="text-hatofes-white font-bold">テトリス</p>
-                      <p className="text-xs text-hatofes-gray">行消しでポイント獲得</p>
-                    </div>
-                  </div>
-                  <ChevronIcon size={20} color="#6B7280" />
-                </div>
-              </section>
-            </Link>
-          )}
-
-
         </main>
       </div>
     </>
   )
-}
-
-// Inline styles for animations
-const styleSheet = document.createElement('style')
-styleSheet.textContent = `
-  @keyframes gradient-shift {
-    0% { background-position: 0% 50%; }
-    50% { background-position: 100% 50%; }
-    100% { background-position: 0% 50%; }
-  }
-  .animate-gradient-shift {
-    background-size: 200% 200%;
-    animation: gradient-shift 3s ease infinite;
-  }
-  @keyframes pulse-border {
-    0%, 100% { border-color: rgba(255, 195, 0, 0.4); }
-    50% { border-color: rgba(255, 195, 0, 0.8); }
-  }
-  .animate-pulse-border {
-    animation: pulse-border 2s ease-in-out infinite;
-  }
-  @keyframes level-bar-fill {
-    from { width: 0; }
-    to { width: var(--bar-width); }
-  }
-  .animate-level-bar {
-    animation: level-bar-fill 1s ease-out forwards;
-  }
-`
-if (!document.querySelector('#home-page-styles')) {
-  styleSheet.id = 'home-page-styles'
-  document.head.appendChild(styleSheet)
 }
